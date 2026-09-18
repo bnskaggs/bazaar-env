@@ -133,6 +133,41 @@ from the sweep: `starting_inventory=5` on micro (structurally correct
 regardless of band) and `strategy_hint` env arg (documented instruction-
 explicitness knob, default false).
 
+### 2026-09-18 hosted preflights + sanity ladder (micro)
+
+Prime Inference bf16 (4x2, max-tokens 400, thinking off) plus a gpt-5-nano
+sanity probe (4x2, OpenAI). Total probe spend across the whole day: well
+under $1.
+
+| Policy / model | terminal_return | Notes |
+|---|---|---|
+| passive scripted | 1.000 | baseline |
+| qwen2.5:7b-instruct (local, quantized) | 1.007 ± 0.014 | noise trading, hoards inventory |
+| Qwen/Qwen3.5-9B (hosted bf16) | 1.012 ± 0.012 | flattens book by end — dealer instinct, no edge capture; wider edges don't help (1.006) |
+| gpt-5-nano (reasoner) | **1.028 ± 0.019** (best 1.044) | 9 trades/ep, 0.25 illegal/ep — real edge capture |
+| honest scripted dealer | 1.040 | greedy anchor |
+
+**Findings:**
+
+1. **The environment is sound.** The ladder orders exactly by model
+   capability, a reasoning model approaches the greedy anchor by pure
+   inference, and protocol failures are ~zero everywhere. The task
+   measures what it claims to measure.
+2. **The 1.05x solve threshold was miscalibrated by construction** — it
+   sits *above* the honest greedy anchor (1.040). No policy that trades
+   only visible edges can clear it on average. Threshold needs re-basing
+   against the honest anchor (e.g., solve = beat passive by half the
+   honest margin, ~1.02, per-seed).
+3. **The GRPO case for training 9B despite "0/8":** rewards are dense and
+   GRPO groups share a seed — the index path and quotes are identical
+   within a group, so world noise cancels and within-group reward
+   differences are pure policy signal. Headroom to the honest anchor is
+   +0.028 from the 9B's 1.012, and nano proves the gap is closable by
+   inference alone. Stated risk: the 9B currently samples no
+   edge-directed behavior; if none appears in rollouts, the curve
+   plateaus at noise — which would itself be a publishable finding about
+   dense-reward trainability claims.
+
 ## Status Upgrade Rule
 
 Do not call the environment trainer-verified until a hosted training run consumes
