@@ -1,0 +1,41 @@
+# First Bazaar training run: Qwen3.5-9B on micro.
+# Preflight ladder (2026-09-18, bf16 hosted, 4x2): passive 1.000, this model
+# 1.012 +/- 0.012 (flattens book, no edge capture), gpt-5-nano 1.028 (best
+# 1.044), honest scripted anchor 1.040. Rewards are dense and GRPO groups
+# share a seed (identical index path within a group), so within-group reward
+# differences are pure policy signal; headroom to the anchor is +0.028.
+# Stated risk: the base model samples no edge-directed behavior today; a flat
+# curve is a possible (and publishable) outcome.
+# Cost sketch: ~10-11 turns/rollout on micro, ~12.5k input tokens/rollout.
+# 60 steps x 64 rollouts = 3,840 consumed -> roughly $10-15 at $0.20/M in,
+# $0.60/M out+train. Monitor with `prime train usage`.
+# enable_thinking=false is load-bearing on Qwen3.5 (magic-sort finding).
+
+model = "Qwen/Qwen3.5-9B"
+max_steps = 60
+batch_size = 64
+rollouts_per_example = 8
+
+[sampling]
+max_tokens = 400
+enable_thinking = false
+
+[[env]]
+id = "bnskaggs/bazaar-env"
+args = { tier = "micro" }
+
+# Explicit [[eval.env]] required: a bare [eval] block silently drops
+# eval_config (magic-sort launch-1 lesson).
+[eval]
+interval = 15
+num_examples = 20
+rollouts_per_example = 2
+
+[eval.sampling]
+max_tokens = 400
+temperature = 0.0
+enable_thinking = false
+
+[[eval.env]]
+id = "bnskaggs/bazaar-env"
+args = { tier = "micro" }
