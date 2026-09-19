@@ -1,6 +1,9 @@
 # Bazaar Env
 
-Status: **designed, engine-tested, eval-pending**.
+Status: **trainer-verified (one LoRA run, one tier)** — a hosted GRPO run
+(Qwen3.5-9B on `micro`, $10.88) raised the frozen-split eval from the
+passive baseline to the honest-dealer anchor. See
+`results/results.md`. Scope: one run, one model, one tier.
 
 Bazaar is a short-horizon dealer-market environment for LLM agents. A model
 trades one commodity against scripted quotes while the commodity's fair value

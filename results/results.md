@@ -1,6 +1,45 @@
 # Bazaar Results
 
-Status: **scripted smokes run 2026-09-18; LLM eval pending**.
+Status: **trainer-verified (one LoRA run, one tier) as of 2026-09-18.**
+
+## Training Run 1 — Qwen3.5-9B on micro (hosted LoRA GRPO)
+
+Run `bazaar-env--qwen3.5-9b--boq0dl` (`boq0dlqme647ww0ryu7coud1`), env
+`bnskaggs/bazaar-env@0.1.0`, config `configs/train-qwen35-9b-micro.toml`
+(60 steps x 64 rollouts, groups of 8, max_tokens 400, thinking off).
+Total cost **$10.88**. Launched and completed 2026-09-18; the env-server
+stack passed health checks on the first attempt (pure-plugin packaging).
+
+**Train reward (batch mean):** 1.249 -> ~1.29 plateau from step ~52
+(peaks 1.297). The batch *minimum* is the early story: mins of 1.03-1.05
+(blunder/format tail) vanish by step ~9, then the mean grinds upward —
+first the bad tail is eliminated, then edge capture improves.
+
+**Frozen-split eval (20 x 2, temp 0), monotonic rise:**
+
+| Step | eval avg (reward) | implied terminal return |
+|---|---|---|
+| base | 1.2506 | ~1.001 (passive level) |
+| 15 | 1.2521 | ~1.002 |
+| 30 | 1.2751 | ~1.025 |
+| 45 | 1.2836 | ~1.034 |
+| 60 | **1.2861** | **~1.036** |
+
+The trained policy lands essentially at the honest scripted anchor
+(1.040 terminal return) — the model learned the compare-and-trade
+behavior it could not execute zero-shot (preflight: 1.012). No late-run
+eval dip this time; step 60 is the keeper.
+
+**Design claims this validates:** dense same-seed GRPO groups carried
+the gradient despite a 0/8 "solve rate" at the (miscalibrated) 1.05x
+threshold — the pre-registered "no bootstrap" risk did not materialize.
+Occasional train rollouts beat the greedy anchor (batch max ~1.33 ≈
+1.08 return), consistent with sizing/timing improvements beyond greedy
+edge-taking; the temp-0 eval does not exceed the anchor.
+
+Scope stated plainly: one run, one model, one tier. "Trainer-verified"
+means the train split, shaped rewards, and group variance have executed
+and produced a rising curve — nothing more.
 
 ## Deterministic Exploit Pass
 
