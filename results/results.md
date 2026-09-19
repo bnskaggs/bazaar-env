@@ -327,3 +327,38 @@ back to pickoff. Same verdict: **engine-tested, not trainable yet at this
 tier.** The gap (quote wider / manage staleness) is exactly the intended
 skill, so the candidate dials are: gentler maker_micro (lower vol or lower
 pickoff intensity), or curriculum from the v1-trained checkpoint.
+
+## V2 Curriculum Run (0.2.1) -- maker_micro from the v1 checkpoint
+
+Run `bazaar-env--qwen3.5-9b--e7naqk` (`e7naqkjeix1hmqf9eibh264t`), warm-started
+from the v1 step-55 checkpoint, 40 new steps on `maker_micro`, dual eval.
+Total cost **$8.12**.
+
+| Step | maker_micro eval | micro eval (forgetting) |
+|---|---:|---:|
+| 60 | 1.2752 | 1.2855 |
+| 70 | 1.2791 | 1.2874 |
+| 80 | 1.2790 | 1.2874 |
+| 90 | 1.2792 | 1.2877 |
+
+Reference points (reward scale = terminal + 0.25): vol-aware scripted anchor
+~1.270; base-9B zero-shot preflight ~1.258.
+
+**Findings:**
+
+1. **Curriculum transfer works.** The v1-trained checkpoint opens the maker
+   game at the anchor level (batch means 1.274 at step 56) and evals **above
+   the vol-aware anchor** (~1.029 terminal vs 1.020) where the base model
+   could not reach it zero-shot (1.008).
+2. **Zero forgetting.** The micro (v1 taker) eval holds at 1.2877, matching
+   the v1 run's final 1.2861.
+3. **Fast plateau, stated plainly.** The maker eval improved for ~10 steps
+   then moved +0.0001 over the final 20. Most of the lift is the transferred
+   prior; the residual trainable headroom on maker_micro with a mild
+   adversary is small. Pushing further needs a harder tier (higher vol /
+   pickoff intensity, maker_easy) or a tighter anchor to chase.
+
+**Status upgrade: v2 is trainer-verified (one curriculum run, one tier)** --
+the train split, maker rewards, and group variance have executed and produced
+an above-anchor policy with no catastrophic forgetting. Scope: one run, one
+model, one tier, warm-started.

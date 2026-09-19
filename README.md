@@ -1,9 +1,12 @@
 # Bazaar Env
 
-Status: **trainer-verified (one LoRA run, one tier)** — a hosted GRPO run
-(Qwen3.5-9B on `micro`, $10.88) raised the frozen-split eval from the
-passive baseline to the honest-dealer anchor. See
-`results/results.md`. Scope: one run, one model, one tier.
+Status: **v1 and v2 trainer-verified.** v1: a hosted GRPO run (Qwen3.5-9B
+on `micro`, $10.88) raised the frozen-split eval from the passive baseline
+to the honest-dealer anchor. v2: a curriculum run warm-started from the v1
+checkpoint ($8.12) evals **above the vol-aware maker anchor** on
+`maker_micro` with zero forgetting of the v1 skill — and plateaus fast,
+which is stated plainly in `results/results.md`. Scope: one run per tier,
+one model, warm-started v2.
 
 Bazaar is a short-horizon dealer-market environment for LLM agents. A model
 trades one commodity against scripted quotes while the commodity's fair value
