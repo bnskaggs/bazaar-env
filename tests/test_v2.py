@@ -119,3 +119,100 @@ def test_result_dict_includes_maker_metrics():
     row = core.result_to_dict(result)
 
     assert {"fills", "realized_spread", "pickoff_losses"} <= set(row)
+
+
+# --- Regression tests from the 09-18 v2 review ---
+
+
+def test_taker_trades_record_edge_and_source():
+    # Bug: taker trades defaulted edge_vs_index to 0.0, which silently killed
+    # trigger-hunting (it needs a positive prior take edge).
+    task = core.generate(tier="micro", seed=2)
+    state = core.initial_state(task)
+    quote = core.current_quote(state)
+    index = core.current_index(state)
+
+    result = core.apply_action(state, core.Action(kind="buy", quantity=1, raw="buy 1"))
+
+    assert result.trade is not None
+    assert result.trade.source == "take"
+    assert result.trade.edge_vs_index == core.round_money(index - quote.ask)
+
+
+def test_trigger_hunt_fires_after_real_take():
+    # End-to-end: a real profitable take through apply_action must arm the hunt.
+    for seed in range(30):
+        task = core.generate(tier="maker_micro", seed=seed, trigger_hunt_probability=1.0)
+        state = core.initial_state(task)
+        quote = core.current_quote(state)
+        index = core.current_index(state)
+        if quote.ask < index and state.cash >= quote.ask:
+            state = core.apply_action(state, core.Action(kind="buy", quantity=1, raw="buy 1")).state
+            hunted = core.current_quote(state)
+            next_index = core.current_index(state)
+            # With hunt probability 1.0 and an armed threshold, the displayed
+            # ask sits just inside the revealed edge (below index).
+            assert hunted.ask < next_index
+            return
+    raise AssertionError("no seed produced a profitable turn-0 take")
+
+
+def test_per_turn_fills_capped_by_posted_size():
+    # Bug: pickoff looped intensity times at full size and noise ignored size,
+    # so displayed size did not bound per-turn exposure.
+    task = core.generate(tier="maker_micro", seed=3)
+    state = core.initial_state(task)
+    index = core.current_index(state)
+    stale_ask = core.round_money(index - 6)
+    action = core.Action(
+        kind="quote", bid=core.round_money(stale_ask - 1), bid_size=1,
+        ask=stale_ask, ask_size=3, raw=f"quote {stale_ask - 1} 1 {stale_ask} 3",
+    )
+
+    result = core.apply_action(state, action)
+
+    sell_fills = sum(t.quantity for t in result.state.trades if t.side == "sell")
+    buy_fills = sum(t.quantity for t in result.state.trades if t.side == "buy")
+    assert sell_fills <= 3
+    assert buy_fills <= 1
+
+
+def test_maker_fill_turn_matches_game_turn():
+    # Bug: fills recorded turn+2 because the turn advanced before _fill.
+    for seed in range(20):
+        task = core.generate(tier="maker_micro", seed=seed)
+        state = core.initial_state(task)
+        result = core.apply_action(state, core.tight_quoter_policy(state))
+        if result.state.trades:
+            assert result.state.trades[0].turn == 1
+            return
+    raise AssertionError("no seed produced a turn-1 fill for a tight quote")
+
+
+def test_v1_public_state_has_no_maker_keys():
+    # Bug: maker keys leaked into v1 state JSON, changing the prompt format the
+    # v1 training run was evaluated on.
+    v1_state = core.public_state(core.initial_state(core.generate(tier="micro", seed=0)))
+    v2_state = core.public_state(core.initial_state(core.generate(tier="maker_micro", seed=0)))
+
+    assert "standing_quote" not in v1_state
+    assert "fills" not in v1_state
+    assert "standing_quote" in v2_state
+    assert "fills" in v2_state
+
+
+def test_avg_quote_width_measures_posted_widths():
+    from bazaar_env.env import avg_quote_width
+
+    completion = [
+        {"role": "assistant", "content": "quote 98 3 102 3"},
+        {"role": "assistant", "content": "pass"},
+        {"role": "assistant", "content": "quote 99 3 101 3"},
+    ]
+    info = _task_info_maker()
+
+    assert avg_quote_width(completion, info) == 3.0
+
+
+def _task_info_maker():
+    return task_row(core.generate(tier="maker_micro", seed=0))["info"]

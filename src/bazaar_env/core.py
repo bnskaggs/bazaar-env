@@ -297,7 +297,7 @@ def is_done(state: MarketState) -> bool:
 
 def public_state(state: MarketState, recent: int = 3) -> dict:
     quote = current_quote(state)
-    return {
+    result = {
         "turn": state.turn + 1 if not is_done(state) else state.task.horizon,
         "turns_remaining": max(0, state.task.horizon - state.turn),
         "cash": round_money(state.cash),
@@ -310,15 +310,6 @@ def public_state(state: MarketState, recent: int = 3) -> dict:
             "ask": quote.ask,
             "ask_size": quote.ask_size,
         },
-        "standing_quote": None if state.standing_quote is None else {
-            "bid": state.standing_quote.bid,
-            "bid_size": state.standing_quote.bid_size,
-            "ask": state.standing_quote.ask,
-            "ask_size": state.standing_quote.ask_size,
-        },
-        "fills": state.fills,
-        "realized_spread": round_money(state.realized_spread),
-        "pickoff_losses": round_money(state.pickoff_losses),
         "recent_trades": [
             {
                 "turn": trade.turn,
@@ -330,6 +321,23 @@ def public_state(state: MarketState, recent: int = 3) -> dict:
             for trade in state.trades[-recent:]
         ],
     }
+    if state.task.config.maker:
+        # Maker-only keys: keep the v1 prompt format byte-identical to what the
+        # v1 training run saw (frozen-format discipline for comparability).
+        result["standing_quote"] = (
+            None
+            if state.standing_quote is None
+            else {
+                "bid": state.standing_quote.bid,
+                "bid_size": state.standing_quote.bid_size,
+                "ask": state.standing_quote.ask,
+                "ask_size": state.standing_quote.ask_size,
+            }
+        )
+        result["fills"] = state.fills
+        result["realized_spread"] = round_money(state.realized_spread)
+        result["pickoff_losses"] = round_money(state.pickoff_losses)
+    return result
 
 
 def render_state(state: MarketState) -> str:
@@ -412,12 +420,17 @@ def apply_action(state: MarketState, action: Action) -> StepResult:
     quantity = action.quantity
     cash_delta = -price * quantity if action.kind == "buy" else price * quantity
     inventory_delta = quantity if action.kind == "buy" else -quantity
+    take_edge = round_money(
+        (index_value - price) if action.kind == "buy" else (price - index_value)
+    )
     trade = Trade(
         turn=state.turn + 1,
         side=action.kind,
         quantity=quantity,
         price=price,
         index_value=index_value,
+        source="take",
+        edge_vs_index=take_edge,
     )
     nxt = replace(
         state,
@@ -427,10 +440,9 @@ def apply_action(state: MarketState, action: Action) -> StepResult:
         trades=state.trades + (trade,),
         first_trade_done=True,
     )
-    edge = round_money((index_value - price) if action.kind == "buy" else (price - index_value))
     return StepResult(
         state=nxt,
-        reply=f"ok: {action.kind} {quantity} @ {price} (edge_vs_index={edge})",
+        reply=f"ok: {action.kind} {quantity} @ {price} (edge_vs_index={take_edge})",
         legal=True,
         trade=trade,
     )
@@ -454,7 +466,9 @@ def _fill(state: MarketState, side: Literal["buy", "sell"], quantity: int, price
         inventory_delta = -quantity
         edge = price - index_value
     trade = Trade(
-        turn=state.turn + 1,
+        # Callers advance the turn before flow resolves, so state.turn is
+        # already the 1-based turn this fill belongs to.
+        turn=state.turn,
         side=side,
         quantity=quantity,
         price=round_money(price),
@@ -487,6 +501,11 @@ def flow_against_quote(state: MarketState) -> tuple[MarketState, list[str]]:
     cfg = state.task.config
     idx = current_index(state)
     notes: list[str] = []
+    # Posted size is the per-turn exposure cap, per side, across ALL flow.
+    # Without this, "up to bid_size" printed in the rules would be a lie and
+    # sizing would be meaningless as a risk control.
+    bid_remaining = quote.bid_size
+    ask_remaining = quote.ask_size
 
     # Noise flow: reservation prices around the new index. Sellers hit our bid;
     # buyers lift our ask. Tight quotes fill, wide quotes idle.
@@ -494,26 +513,37 @@ def flow_against_quote(state: MarketState) -> tuple[MarketState, list[str]]:
     for _ in range(cfg.flow_intensity):
         if rng.random() < 0.5:
             reservation = idx - rng.uniform(-cfg.spread, cfg.edge_width)
-            if quote.bid >= reservation:
+            if quote.bid >= reservation and bid_remaining > 0:
                 state, trade = _fill(state, "buy", 1, quote.bid, "noise", idx)
                 if trade:
+                    bid_remaining -= trade.quantity
                     notes.append(f"noise_seller_fill buy 1 @ {quote.bid}")
         else:
             reservation = idx + rng.uniform(-cfg.spread, cfg.edge_width)
-            if quote.ask <= reservation:
+            if quote.ask <= reservation and ask_remaining > 0:
                 state, trade = _fill(state, "sell", 1, quote.ask, "noise", idx)
                 if trade:
+                    ask_remaining -= trade.quantity
                     notes.append(f"noise_buyer_fill sell 1 @ {quote.ask}")
 
-    # Informed flow: pick off stale quotes after the index has moved.
-    for _ in range(cfg.pickoff_intensity):
-        if quote.ask < idx:
-            state, trade = _fill(state, "sell", quote.ask_size, quote.ask, "pickoff", idx)
+    # Informed flow: picks off whatever stale size remains after noise.
+    # pickoff_intensity = number of informed traders; each notices a stale
+    # quote with an independent seeded coin, and any one of them takes the
+    # full remaining size. Arrival probability = 1 - 0.5**intensity.
+    pickoff_rng = maker_rng(state, 29)
+    informed_arrives = any(
+        pickoff_rng.random() < 0.5 for _ in range(cfg.pickoff_intensity)
+    )
+    if informed_arrives:
+        if quote.ask < idx and ask_remaining > 0:
+            state, trade = _fill(state, "sell", ask_remaining, quote.ask, "pickoff", idx)
             if trade:
+                ask_remaining -= trade.quantity
                 notes.append(f"pickoff sell {trade.quantity} @ {quote.ask}")
-        if quote.bid > idx:
-            state, trade = _fill(state, "buy", quote.bid_size, quote.bid, "pickoff", idx)
+        if quote.bid > idx and bid_remaining > 0:
+            state, trade = _fill(state, "buy", bid_remaining, quote.bid, "pickoff", idx)
             if trade:
+                bid_remaining -= trade.quantity
                 notes.append(f"pickoff buy {trade.quantity} @ {quote.bid}")
     return state, notes
 

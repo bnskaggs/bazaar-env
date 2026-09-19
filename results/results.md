@@ -287,3 +287,43 @@ anchor. This is a good eval surface: the 9B learns/executes "post quotes" but
 not "quote wide enough for volatility." A training run is **not** launched from
 this band read. Next design dial is either easier maker_micro (lower vol / wider
 honest anchor gap) or a staged curriculum from taker-trained weights to maker.
+
+### 2026-09-18 v2 review fixes (0.2.1) -- supersedes the anchor numbers above
+
+A review pass found five bugs in 0.2.0; all fixed and regression-tested
+(39 tests total):
+
+1. Taker trades did not record `edge_vs_index`, so trigger-hunting (con 3)
+   could never fire in live play. Fixed; an end-to-end test now proves a real
+   profitable take arms the hunt.
+2. Posted quote size did not bound per-turn exposure (noise ignored size;
+   pickoff looped `intensity` times at full size). Fixed: posted size is a hard
+   per-turn per-side cap across all flow. Pickoff now arrives with probability
+   `1 - 0.5^pickoff_intensity` and takes the remaining stale size once.
+3. Maker fills recorded `turn+2` in the trade log the model reads. Fixed.
+4. Maker-only state keys leaked into v1 tiers, silently changing the v1 prompt
+   format the trained run was evaluated on. Fixed: v1 state JSON is
+   byte-identical to the training run's format again.
+5. `avg_quote_width` measured fill-edge dispersion, not width. Fixed: it now
+   averages `ask - bid` across posted quote commands.
+
+Post-fix anchors (20 seeds): `maker_micro` tight 0.996 (losses 5.4, bounded),
+vol-aware 1.020 (unchanged), wide/passive ~0.999; `maker_easy` tight 0.983
+(losses 13.7), vol-aware 1.002. The 0.2.0 preflight numbers above were measured
+on the buggy engine (uncapped exposure, dead con 3); the 9B preflight is re-run
+below on 0.2.1.
+
+### 2026-09-18 9B re-preflight on 0.2.1 (maker_micro, fixed engine)
+
+| Model | terminal_return | fills | realized_spread | pickoff_losses | avg_quote_width |
+|---|---:|---:|---:|---:|---:|
+| Qwen/Qwen3.5-9B | 1.008 +/- 0.005 | 15.5 | 6.79 | 2.89 | ~1.0 |
+| vol-aware scripted anchor | 1.020 | 17.9 | 31.18 | ~0 | ~3.8 |
+
+Read: better than the buggy-engine read (1.004) and the model now makes real
+markets (fills, spread capture), but it quotes about 1.0 wide where the
+vol-aware anchor quotes ~3.8 wide -- it earns flow and gives too much of it
+back to pickoff. Same verdict: **engine-tested, not trainable yet at this
+tier.** The gap (quote wider / manage staleness) is exactly the intended
+skill, so the candidate dials are: gentler maker_micro (lower vol or lower
+pickoff intensity), or curriculum from the v1-trained checkpoint.

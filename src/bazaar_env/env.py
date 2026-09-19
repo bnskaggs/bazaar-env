@@ -197,17 +197,17 @@ def pickoff_losses(completion, info, **kwargs) -> float:
 
 
 def avg_quote_width(completion, info, **kwargs) -> float:
-    result = replay(info, completion)
-    quote_trades = [t for t in result.final_state.trades if t.source in {"noise", "pickoff"}]
-    if not quote_trades:
+    """Average posted quote width (ask - bid) across the transcript's quote
+    commands. 0.0 if the model never posted a quote."""
+    widths = [
+        action.ask - action.bid
+        for text in assistant_texts(completion)
+        if (action := core.parse_action(text)) is not None
+        and action.kind == "quote"
+        and action.ask > action.bid  # crossed quotes are rejected, not posted
+    ]
+    if not widths:
         return 0.0
-    widths = []
-    state = core.initial_state(result.final_state.task)
-    # Approximate from standing quote widths available in the transcript is not
-    # stored, so use realized fill edge dispersion as a lightweight width proxy.
-    # The core exploit pass stores exact policy widths.
-    for trade in quote_trades:
-        widths.append(abs(trade.edge_vs_index))
     return sum(widths) / len(widths)
 
 

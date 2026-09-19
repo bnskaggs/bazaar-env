@@ -141,18 +141,26 @@ The quote replaces the standing market. `pass` leaves the quote standing. The tu
 2. **Bait-and-switch depth.** On maker tiers, juicy displayed taker quotes can have lower executable size than displayed size; oversizing returns a named illegal reason.
 3. **Trigger-hunting.** The displayed taker quote can move just inside the smallest profitable edge the agent previously accepted. This is scripted and seeded, not an LLM judge.
 
-### V2 scripted anchors (20 seeds)
+### V2 scripted anchors (20 seeds, after the 09-18 review fixes)
+
+Review fixes that changed semantics: (1) taker trades now record their
+edge, which arms trigger-hunting in real play (it was dead code before);
+(2) posted quote size is a hard per-turn exposure cap across all flow --
+"up to bid_size" is now true; (3) informed pickoff arrives with
+probability 1 - 0.5^pickoff_intensity and takes the remaining stale size
+once, instead of looping at full size.
 
 `maker_micro`:
 
-- `tight_quoter`: terminal 0.990, fills 57.2, pickoff losses 14.6 -- overtrades and gets picked off.
+- `tight_quoter`: terminal 0.996, fills 39.3, pickoff losses 5.4 -- overtrades and bleeds, now bounded by posted size.
 - `wide_quoter`: terminal 0.999, zero fills -- safe but idle.
-- `vol_aware_quoter`: terminal 1.020, fills 18.0, pickoff losses ~0 -- the honest maker anchor.
-- `threshold_taker`: terminal 1.026 -- taker edge still exists; useful as a con-3 victim.
+- `vol_aware_quoter`: terminal 1.020, fills 17.9, pickoff losses ~0 -- the honest maker anchor.
+- `threshold_taker`: terminal 1.027 -- taker edge still exists; the con-3 victim now actually arms the hunt.
 
 `maker_easy`:
 
-- `tight_quoter`: terminal 0.964, pickoff losses 41.6 -- hard-end overtrading farm exposed.
+- `tight_quoter`: terminal 0.983, pickoff losses 13.7 -- hard-end overtrading still punished.
 - `vol_aware_quoter`: terminal 1.002, low fills -- safer but sparse.
 
-These anchors are the v2 exploit catalogue baseline. Model preflights come next; training is a separate go/no-go.
+These anchors are the v2 exploit catalogue baseline. Model preflights come next;
+training is a separate go/no-go.
