@@ -118,3 +118,41 @@ The frozen eval split is generated from disjoint seeds. The tasks are executable
 not recallable: a price path and quote stream cannot be memorized from the
 internet. Contamination risk is mostly implementation leakage, not public-answer
 leakage.
+
+## V2 Maker + Adversary (implemented 0.2.0)
+
+V2 turns the agent from a taker into a dealer. The new command is:
+
+```text
+quote BP BQ AP AQ
+```
+
+The quote replaces the standing market. `pass` leaves the quote standing. The turn order is deliberate and is the adverse-selection lesson:
+
+1. Agent sees `index_t` and posts a quote.
+2. The index advances to `index_t+1`.
+3. Scripted noise flow fills attractive quotes.
+4. Scripted informed flow picks off stale quotes using `index_t+1`.
+5. State is marked and returned.
+
+### Implemented adversary cons
+
+1. **Stale-quote pickoff.** If the ask is below the stepped index, informed flow buys from the agent; if the bid is above the stepped index, informed flow sells to the agent. `pickoff_losses` records the loss against the index.
+2. **Bait-and-switch depth.** On maker tiers, juicy displayed taker quotes can have lower executable size than displayed size; oversizing returns a named illegal reason.
+3. **Trigger-hunting.** The displayed taker quote can move just inside the smallest profitable edge the agent previously accepted. This is scripted and seeded, not an LLM judge.
+
+### V2 scripted anchors (20 seeds)
+
+`maker_micro`:
+
+- `tight_quoter`: terminal 0.990, fills 57.2, pickoff losses 14.6 -- overtrades and gets picked off.
+- `wide_quoter`: terminal 0.999, zero fills -- safe but idle.
+- `vol_aware_quoter`: terminal 1.020, fills 18.0, pickoff losses ~0 -- the honest maker anchor.
+- `threshold_taker`: terminal 1.026 -- taker edge still exists; useful as a con-3 victim.
+
+`maker_easy`:
+
+- `tight_quoter`: terminal 0.964, pickoff losses 41.6 -- hard-end overtrading farm exposed.
+- `vol_aware_quoter`: terminal 1.002, low fills -- safer but sparse.
+
+These anchors are the v2 exploit catalogue baseline. Model preflights come next; training is a separate go/no-go.

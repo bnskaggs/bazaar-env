@@ -25,10 +25,12 @@ RULES = (
     "net worth marked at the final index, divided by your starting net worth "
     "(cash plus starting inventory marked at the first index), plus a small "
     "once-only bonus for executing a real trade and "
-    "a small format bonus. Reply each turn with exactly one command: `buy Q`, "
-    "`sell Q`, or `pass`, where Q is a positive integer. You cannot short in v1: "
-    "sell quantity is capped by inventory, and buy quantity is capped by cash. "
-    "There are {horizon} turns."
+    "a small format bonus. Reply each turn with one command: `buy Q`, "
+    "`sell Q`, `pass`, or (on maker tiers) `quote BP BQ AP AQ`, where "
+    "BP/BQ are your bid price/size and AP/AQ are your ask price/size. "
+    "A quote replaces your standing market; `pass` leaves it unchanged. "
+    "You cannot short in v1/v2: sell quantity is capped by inventory, and "
+    "buy quantity is capped by cash. There are {horizon} turns."
 )
 
 # Optional rules addendum: states the trading atom explicitly. Instruction
@@ -60,6 +62,8 @@ def task_from_info(info: dict[str, Any]) -> core.MarketTask:
         )
         for row in info["quotes"]
     )
+    cfg = info.get("config") or {}
+    config = core.tier_config(str(info["tier"]), **cfg)
     return core.MarketTask(
         seed=int(info["seed"]),
         tier=str(info["tier"]),
@@ -68,6 +72,7 @@ def task_from_info(info: dict[str, Any]) -> core.MarketTask:
         starting_inventory=int(info.get("starting_inventory", 0)),
         index_path=tuple(float(value) for value in info["index_path"]),
         quotes=quotes,
+        config=config,
     )
 
 
@@ -179,6 +184,33 @@ def final_inventory(completion, info, **kwargs) -> float:
     return float(replay(info, completion).final_state.inventory)
 
 
+def fill_count(completion, info, **kwargs) -> float:
+    return float(replay(info, completion).final_state.fills)
+
+
+def realized_spread(completion, info, **kwargs) -> float:
+    return float(replay(info, completion).final_state.realized_spread)
+
+
+def pickoff_losses(completion, info, **kwargs) -> float:
+    return float(replay(info, completion).final_state.pickoff_losses)
+
+
+def avg_quote_width(completion, info, **kwargs) -> float:
+    result = replay(info, completion)
+    quote_trades = [t for t in result.final_state.trades if t.source in {"noise", "pickoff"}]
+    if not quote_trades:
+        return 0.0
+    widths = []
+    state = core.initial_state(result.final_state.task)
+    # Approximate from standing quote widths available in the transcript is not
+    # stored, so use realized fill edge dispersion as a lightweight width proxy.
+    # The core exploit pass stores exact policy widths.
+    for trade in quote_trades:
+        widths.append(abs(trade.edge_vs_index))
+    return sum(widths) / len(widths)
+
+
 class BazaarEnv(vf.MultiTurnEnv):
     def __init__(self, strict_format: bool = True, repeat_stop: int = 4, **kwargs):
         super().__init__(max_turns=200, **kwargs)
@@ -279,6 +311,10 @@ def task_row(task: core.MarketTask, strategy_hint: bool = False) -> dict[str, An
             "starting_cash": task.starting_cash,
             "starting_inventory": task.starting_inventory,
             "index_path": list(task.index_path),
+            "config": {
+                key: getattr(task.config, key)
+                for key in core.Tier.__dataclass_fields__
+            },
             "quotes": [
                 {
                     "bid": quote.bid,
@@ -355,6 +391,10 @@ def load_environment(
     rubric.add_metric(first_trade_turn)
     rubric.add_metric(no_progress_stop_metric)
     rubric.add_metric(final_inventory)
+    rubric.add_metric(fill_count)
+    rubric.add_metric(realized_spread)
+    rubric.add_metric(pickoff_losses)
+    rubric.add_metric(avg_quote_width)
 
     return BazaarEnv(
         dataset=train,

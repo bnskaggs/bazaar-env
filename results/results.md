@@ -215,3 +215,75 @@ under $1.
 Do not call the environment trainer-verified until a hosted training run consumes
 the train split and shows a rising reward curve. Passing tests and `vf-eval`
 only prove the eval path.
+
+## V2 Scripted Anchors (maker + adversary)
+
+Status: **engine-tested; model preflight pending**.
+
+Run:
+
+```powershell
+uv run --extra dev python -m bazaar_env.exploits --tier maker_micro --seeds 20
+uv run --extra dev python -m bazaar_env.exploits --tier maker_easy --seeds 20
+```
+
+### 2026-09-18 anchors
+
+`maker_micro`, 20 seeds:
+
+```json
+{
+  "passive": {"terminal_return": 0.999, "fills": 0, "pickoff_losses": 0.0},
+  "wide_quoter": {"terminal_return": 0.999, "fills": 0, "pickoff_losses": 0.0},
+  "tight_quoter": {"terminal_return": 0.990, "fills": 57.15, "pickoff_losses": 14.606},
+  "vol_aware_quoter": {"terminal_return": 1.020, "fills": 18.0, "pickoff_losses": 0.004},
+  "threshold_taker": {"terminal_return": 1.026, "wins_vs_passive": 0.95}
+}
+```
+
+`maker_easy`, 20 seeds:
+
+```json
+{
+  "passive": {"terminal_return": 0.998, "fills": 0, "pickoff_losses": 0.0},
+  "wide_quoter": {"terminal_return": 0.998, "fills": 0, "pickoff_losses": 0.0},
+  "tight_quoter": {"terminal_return": 0.964, "fills": 66.75, "pickoff_losses": 41.635},
+  "vol_aware_quoter": {"terminal_return": 1.002, "fills": 4.85, "pickoff_losses": 0.443},
+  "threshold_taker": {"terminal_return": 1.007, "wins_vs_passive": 0.90}
+}
+```
+
+Read: the mechanics are live. Tight quoting overtrades and gets picked off;
+wide quoting earns nothing; the vol-aware maker earns spread with low pickoff on
+`maker_micro`. `maker_easy` is the hard-end exploit check: tight quoting gets
+punished heavily and vol-aware becomes safe but sparse.
+
+## V2 Preflight Protocol
+
+First probes:
+
+```powershell
+uv run --extra dev vf-eval bazaar -m gpt-5-nano -b https://api.openai.com/v1 -k OPENAI_API_KEY -n 4 -r 2 -a '{"tier":"maker_micro"}' --disable-env-server
+uv run --extra dev vf-eval bazaar -m Qwen/Qwen3.5-9B -b https://api.pinference.ai/api/v1 -k PRIME_API_KEY -n 4 -r 2 --max-tokens 400 -S '{"extra_body":{"chat_template_kwargs":{"enable_thinking":false}}}' -a '{"tier":"maker_micro"}' --disable-env-server
+```
+
+Band read should compare models to the `vol_aware_quoter` anchor (terminal return
+~1.020 on `maker_micro`), not to v1's taker anchor.
+
+### 2026-09-18 v2 model preflights (maker_micro)
+
+4 examples x 2 rollouts. Nano via OpenAI; Qwen3.5-9B via Prime Inference
+(bf16, max_tokens 400, thinking off).
+
+| Model | terminal_return | fills | realized_spread | pickoff_losses | Read |
+|---|---:|---:|---:|---:|---|
+| gpt-5-nano | 1.012 +/- 0.003 | 1.5 | 1.03 | 0.07 | Mostly falls back to taker behavior; one rollout posts/fills. |
+| Qwen/Qwen3.5-9B | 1.004 +/- 0.008 | 13.8 | 5.52 | 5.78 | Makes markets, but gives back the spread to pickoff. |
+| vol-aware scripted anchor | 1.020 | 18.0 | 31.25 | ~0 | Honest-maker target. |
+
+Verdict: **v2 is engine-tested, not trainable yet.** The mechanics are live and
+measurable (fills, spread, pickoff), but neither model clears the vol-aware
+anchor. This is a good eval surface: the 9B learns/executes "post quotes" but
+not "quote wide enough for volatility." A training run is **not** launched from
+this band read. Next design dial is either easier maker_micro (lower vol / wider
+honest anchor gap) or a staged curriculum from taker-trained weights to maker.

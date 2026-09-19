@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass, replace
 from typing import Callable, Iterable, Literal
 
-ActionKind = Literal["buy", "sell", "pass"]
+ActionKind = Literal["buy", "sell", "pass", "quote"]
 
 FORMAT_BONUS = 0.2
 FIRST_TRADE_BONUS = 0.05
@@ -31,6 +31,12 @@ class Tier:
     edge_width: float = 4.0
     edge_probability: float = 0.75
     max_quote_qty: int = 5
+    maker: bool = False
+    flow_intensity: int = 4
+    pickoff_intensity: int = 3
+    bait_probability: float = 0.0
+    bait_depth_fraction: float = 0.25
+    trigger_hunt_probability: float = 0.0
 
 
 TIERS: dict[str, Tier] = {
@@ -43,6 +49,8 @@ TIERS: dict[str, Tier] = {
     "trivial": Tier(vol=1.0, spread=2.0, edge_width=3.0, edge_probability=0.65),
     "easy": Tier(vol=1.5, spread=3.0, edge_width=2.0, edge_probability=0.45),
     "hard": Tier(vol=3.0, spread=4.0, edge_width=1.0, edge_probability=0.2),
+    "maker_micro": Tier(starting_inventory=5, vol=0.6, spread=2.0, edge_width=5.0, edge_probability=0.7, maker=True, flow_intensity=4, pickoff_intensity=2, bait_probability=0.15, trigger_hunt_probability=0.15),
+    "maker_easy": Tier(starting_inventory=5, vol=1.2, spread=2.5, edge_width=3.0, edge_probability=0.45, maker=True, flow_intensity=5, pickoff_intensity=3, bait_probability=0.25, trigger_hunt_probability=0.25),
 }
 
 
@@ -61,6 +69,8 @@ class Trade:
     quantity: int
     price: float
     index_value: float
+    source: str = "take"
+    edge_vs_index: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -72,6 +82,7 @@ class MarketTask:
     starting_inventory: int
     index_path: tuple[float, ...]
     quotes: tuple[Quote, ...]
+    config: Tier
 
 
 @dataclass(frozen=True)
@@ -81,7 +92,11 @@ class MarketState:
     cash: float = 0.0
     inventory: int = 0
     trades: tuple[Trade, ...] = ()
+    standing_quote: Quote | None = None
     first_trade_done: bool = False
+    fills: int = 0
+    realized_spread: float = 0.0
+    pickoff_losses: float = 0.0
     illegal_free_used: bool = False
     stopped: bool = False
     stop_reason: str | None = None
@@ -92,6 +107,10 @@ class Action:
     kind: ActionKind
     quantity: int = 0
     raw: str = ""
+    bid: float = 0.0
+    bid_size: int = 0
+    ask: float = 0.0
+    ask_size: int = 0
 
 
 @dataclass(frozen=True)
@@ -190,11 +209,23 @@ def generate(tier: str = "micro", seed: int = 0, **overrides) -> MarketTask:
         starting_inventory=config.starting_inventory,
         index_path=index_path,
         quotes=quotes,
+        config=config,
     )
 
 
+def default_standing_quote(task: MarketTask) -> Quote | None:
+    # v2: the agent must choose to make a market. `pass` preserves a standing
+    # quote once posted, but there is no default quote at the start.
+    return None
+
+
 def initial_state(task: MarketTask) -> MarketState:
-    return MarketState(task=task, cash=task.starting_cash, inventory=task.starting_inventory)
+    return MarketState(
+        task=task,
+        cash=task.starting_cash,
+        inventory=task.starting_inventory,
+        standing_quote=default_standing_quote(task),
+    )
 
 
 def starting_net_worth(task: MarketTask) -> float:
@@ -205,10 +236,51 @@ def current_index(state: MarketState) -> float:
     return state.task.index_path[min(state.turn, state.task.horizon)]
 
 
+def _take_edges(state: MarketState) -> list[tuple[str, float]]:
+    return [
+        (trade.side, trade.edge_vs_index)
+        for trade in state.trades
+        if trade.source == "take" and trade.edge_vs_index > 0
+    ]
+
+
+def trigger_threshold(state: MarketState) -> float | None:
+    edges = [edge for _, edge in _take_edges(state)]
+    return min(edges) if edges else None
+
+
 def current_quote(state: MarketState) -> Quote:
-    if state.turn >= state.task.horizon:
-        return state.task.quotes[-1]
-    return state.task.quotes[state.turn]
+    base = state.task.quotes[-1] if state.turn >= state.task.horizon else state.task.quotes[state.turn]
+    cfg = state.task.config
+    if not cfg.maker or not state.trades or cfg.trigger_hunt_probability <= 0:
+        return base
+    rng = maker_rng(state, 41)
+    threshold = trigger_threshold(state)
+    if threshold is None or rng.random() > cfg.trigger_hunt_probability:
+        return base
+    idx = current_index(state)
+    bait_edge = max(0.01, threshold - 0.05)
+    # Match the most recent profitable take side; bait just inside the inferred
+    # trigger and with minimal displayed size.
+    side = _take_edges(state)[-1][0]
+    if side == "buy":
+        return replace(base, ask=round_money(idx - bait_edge), ask_size=max(1, base.ask_size))
+    return replace(base, bid=round_money(idx + bait_edge), bid_size=max(1, base.bid_size))
+
+
+def executable_size(state: MarketState, action: Action, quote: Quote) -> int:
+    displayed = quote.ask_size if action.kind == "buy" else quote.bid_size
+    cfg = state.task.config
+    if not cfg.maker or cfg.bait_probability <= 0:
+        return displayed
+    idx = current_index(state)
+    edge = (idx - quote.ask) if action.kind == "buy" else (quote.bid - idx)
+    if edge <= 0:
+        return displayed
+    rng = maker_rng(state, 73)
+    if rng.random() > cfg.bait_probability:
+        return displayed
+    return max(1, int(displayed * cfg.bait_depth_fraction))
 
 
 def marked_net_worth(state: MarketState) -> float:
@@ -238,6 +310,15 @@ def public_state(state: MarketState, recent: int = 3) -> dict:
             "ask": quote.ask,
             "ask_size": quote.ask_size,
         },
+        "standing_quote": None if state.standing_quote is None else {
+            "bid": state.standing_quote.bid,
+            "bid_size": state.standing_quote.bid_size,
+            "ask": state.standing_quote.ask,
+            "ask_size": state.standing_quote.ask_size,
+        },
+        "fills": state.fills,
+        "realized_spread": round_money(state.realized_spread),
+        "pickoff_losses": round_money(state.pickoff_losses),
         "recent_trades": [
             {
                 "turn": trade.turn,
@@ -264,19 +345,35 @@ def illegal_reason(state: MarketState, action: Action) -> str | None:
         return "episode is already complete"
     if action.kind == "pass":
         return None
+    if action.kind == "quote":
+        if not state.task.config.maker:
+            return "quote action is only legal on maker tiers"
+        if action.bid <= 0 or action.ask <= 0:
+            return "quote prices must be positive"
+        if action.bid >= action.ask:
+            return "bid must be below ask"
+        if action.bid_size <= 0 or action.ask_size <= 0:
+            return "quote sizes must be positive integers"
+        return None
     if not legal_quantity(action):
         return "quantity must be a positive integer"
 
     quote = current_quote(state)
     if action.kind == "buy":
-        if action.quantity > quote.ask_size:
+        ask_size = executable_size(state, action, quote)
+        if action.quantity > ask_size:
+            if ask_size < quote.ask_size:
+                return f"displayed ask size {quote.ask_size} but executable size is {ask_size}"
             return f"quantity {action.quantity} exceeds ask size {quote.ask_size}"
         cost = quote.ask * action.quantity
         if cost > state.cash + 1e-9:
             return f"not enough cash to buy {action.quantity} at ask {quote.ask}"
         return None
     if action.kind == "sell":
-        if action.quantity > quote.bid_size:
+        bid_size = executable_size(state, action, quote)
+        if action.quantity > bid_size:
+            if bid_size < quote.bid_size:
+                return f"displayed bid size {quote.bid_size} but executable size is {bid_size}"
             return f"quantity {action.quantity} exceeds bid size {quote.bid_size}"
         if action.quantity > state.inventory:
             return f"not enough inventory to sell {action.quantity}"
@@ -298,6 +395,9 @@ def apply_action(state: MarketState, action: Action) -> StepResult:
             reply=f"illegal: {action.raw or action.kind} - {reason}. {turn_note}",
             legal=False,
         )
+
+    if state.task.config.maker and action.kind in {"pass", "quote"}:
+        return apply_maker_action(state, action)
 
     if action.kind == "pass":
         return StepResult(
@@ -336,6 +436,108 @@ def apply_action(state: MarketState, action: Action) -> StepResult:
     )
 
 
+def _fill(state: MarketState, side: Literal["buy", "sell"], quantity: int, price: float, source: str, index_value: float) -> tuple[MarketState, Trade | None]:
+    if quantity <= 0:
+        return state, None
+    if side == "buy":
+        quantity = min(quantity, int(state.cash // price)) if price > 0 else 0
+        if quantity <= 0:
+            return state, None
+        cash_delta = -price * quantity
+        inventory_delta = quantity
+        edge = index_value - price
+    else:
+        quantity = min(quantity, state.inventory)
+        if quantity <= 0:
+            return state, None
+        cash_delta = price * quantity
+        inventory_delta = -quantity
+        edge = price - index_value
+    trade = Trade(
+        turn=state.turn + 1,
+        side=side,
+        quantity=quantity,
+        price=round_money(price),
+        index_value=index_value,
+        source=source,
+        edge_vs_index=round_money(edge),
+    )
+    realized = max(0.0, edge * quantity)
+    pickoff = max(0.0, -edge * quantity) if source == "pickoff" else 0.0
+    return replace(
+        state,
+        cash=round_money(state.cash + cash_delta),
+        inventory=state.inventory + inventory_delta,
+        trades=state.trades + (trade,),
+        first_trade_done=True,
+        fills=state.fills + quantity,
+        realized_spread=round_money(state.realized_spread + realized),
+        pickoff_losses=round_money(state.pickoff_losses + pickoff),
+    ), trade
+
+
+def maker_rng(state: MarketState, salt: int) -> random.Random:
+    return random.Random(state.task.seed * 10_000 + state.turn * 101 + salt)
+
+
+def flow_against_quote(state: MarketState) -> tuple[MarketState, list[str]]:
+    quote = state.standing_quote
+    if quote is None:
+        return state, []
+    cfg = state.task.config
+    idx = current_index(state)
+    notes: list[str] = []
+
+    # Noise flow: reservation prices around the new index. Sellers hit our bid;
+    # buyers lift our ask. Tight quotes fill, wide quotes idle.
+    rng = maker_rng(state, 17)
+    for _ in range(cfg.flow_intensity):
+        if rng.random() < 0.5:
+            reservation = idx - rng.uniform(-cfg.spread, cfg.edge_width)
+            if quote.bid >= reservation:
+                state, trade = _fill(state, "buy", 1, quote.bid, "noise", idx)
+                if trade:
+                    notes.append(f"noise_seller_fill buy 1 @ {quote.bid}")
+        else:
+            reservation = idx + rng.uniform(-cfg.spread, cfg.edge_width)
+            if quote.ask <= reservation:
+                state, trade = _fill(state, "sell", 1, quote.ask, "noise", idx)
+                if trade:
+                    notes.append(f"noise_buyer_fill sell 1 @ {quote.ask}")
+
+    # Informed flow: pick off stale quotes after the index has moved.
+    for _ in range(cfg.pickoff_intensity):
+        if quote.ask < idx:
+            state, trade = _fill(state, "sell", quote.ask_size, quote.ask, "pickoff", idx)
+            if trade:
+                notes.append(f"pickoff sell {trade.quantity} @ {quote.ask}")
+        if quote.bid > idx:
+            state, trade = _fill(state, "buy", quote.bid_size, quote.bid, "pickoff", idx)
+            if trade:
+                notes.append(f"pickoff buy {trade.quantity} @ {quote.bid}")
+    return state, notes
+
+
+def apply_maker_action(state: MarketState, action: Action) -> StepResult:
+    if action.kind == "quote":
+        standing = Quote(
+            bid=round_money(action.bid),
+            bid_size=action.bid_size,
+            ask=round_money(action.ask),
+            ask_size=action.ask_size,
+        )
+        state = replace(state, standing_quote=standing)
+        reply = f"ok: quote bid {standing.bid} x {standing.bid_size} / ask {standing.ask} x {standing.ask_size}"
+    else:
+        reply = "ok: standing quote left unchanged"
+    # Quote at index_t, then the world moves to index_t+1 before fills.
+    state = replace(state, turn=min(state.turn + 1, state.task.horizon))
+    state, notes = flow_against_quote(state)
+    if notes:
+        reply += "; fills: " + "; ".join(notes)
+    return StepResult(state=state, reply=reply, legal=True)
+
+
 def reward_components(state: MarketState, format_ok: bool) -> RewardComponents:
     terminal_return = marked_net_worth(state) / starting_net_worth(state.task)
     return RewardComponents(
@@ -357,7 +559,10 @@ def summarize_reward(state: MarketState, format_ok: bool) -> dict[str, float]:
 # Lenient extraction, last match wins — the proven Magic Sort protocol.
 # Requiring the whole message to be a bare command punishes chatty models for
 # protocol, not planning (the seg-4 confound).
-ACTION_RE = re.compile(r"\b(?:(buy|sell)\s+(\d+)|(pass))\b", re.IGNORECASE)
+ACTION_RE = re.compile(
+    r"\b(?:(quote)\s+([0-9]+(?:\.[0-9]+)?)\s+(\d+)\s+([0-9]+(?:\.[0-9]+)?)\s+(\d+)|(buy|sell)\s+(\d+)|(pass))\b",
+    re.IGNORECASE,
+)
 
 
 def parse_action(text: str) -> Action | None:
@@ -366,10 +571,23 @@ def parse_action(text: str) -> Action | None:
         pass
     if match is None:
         return None
-    if match.group(3) is not None:
+    if match.group(8) is not None:
         return Action(kind="pass", raw="pass")
-    kind: ActionKind = "buy" if match.group(1).lower() == "buy" else "sell"
-    quantity = int(match.group(2))
+    if match.group(1) is not None:
+        bid = float(match.group(2))
+        bid_size = int(match.group(3))
+        ask = float(match.group(4))
+        ask_size = int(match.group(5))
+        return Action(
+            kind="quote",
+            bid=bid,
+            bid_size=bid_size,
+            ask=ask,
+            ask_size=ask_size,
+            raw=f"quote {bid:g} {bid_size} {ask:g} {ask_size}",
+        )
+    kind: ActionKind = "buy" if match.group(6).lower() == "buy" else "sell"
+    quantity = int(match.group(7))
     return Action(kind=kind, quantity=quantity, raw=f"{kind} {quantity}")
 
 
@@ -406,6 +624,48 @@ def coin_flip_gambler_policy(seed: int = 0) -> Policy:
             return Action(kind="sell", quantity=qty, raw=f"sell {qty}")
         return passive_policy(state)
 
+    return policy
+
+
+def quote_action(index_value: float, width: float, size: int = 3) -> Action:
+    bid = round_money(index_value - width / 2)
+    ask = round_money(index_value + width / 2)
+    return Action(
+        kind="quote",
+        bid=bid,
+        bid_size=size,
+        ask=ask,
+        ask_size=size,
+        raw=f"quote {bid:g} {size} {ask:g} {size}",
+    )
+
+
+def wide_quoter_policy(state: MarketState) -> Action:
+    return quote_action(current_index(state), width=12.0, size=3)
+
+
+def tight_quoter_policy(state: MarketState) -> Action:
+    return quote_action(current_index(state), width=0.5, size=5)
+
+
+def vol_aware_quoter_policy(state: MarketState) -> Action:
+    # Simple anchor: quote roughly 3 sigma wide, with a floor. It should trade
+    # enough to earn flow while avoiding most pickoffs.
+    width = max(1.5, 3.0 * state.task.config.vol + state.task.config.spread)
+    return quote_action(current_index(state), width=width, size=3)
+
+
+def threshold_taker_policy(threshold: float = 1.5) -> Policy:
+    def policy(state: MarketState) -> Action:
+        quote = current_quote(state)
+        idx = current_index(state)
+        if quote.ask <= idx - threshold and state.cash >= quote.ask:
+            qty = min(quote.ask_size, max(1, int(state.cash // quote.ask)))
+            return Action(kind="buy", quantity=qty, raw=f"buy {qty}")
+        if quote.bid >= idx + threshold and state.inventory > 0:
+            qty = min(quote.bid_size, state.inventory)
+            return Action(kind="sell", quantity=qty, raw=f"sell {qty}")
+        return passive_policy(state)
     return policy
 
 
@@ -471,6 +731,9 @@ def result_to_dict(result: ReplayResult) -> dict:
         "illegal_actions": result.illegal_actions,
         "no_progress_stopped": result.no_progress_stopped,
         "final_net_worth": marked_net_worth(result.final_state),
+        "fills": result.final_state.fills,
+        "realized_spread": result.final_state.realized_spread,
+        "pickoff_losses": result.final_state.pickoff_losses,
         "components": result.components,
     }
 
@@ -495,3 +758,10 @@ def main(argv: Iterable[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+
+
+
+
+

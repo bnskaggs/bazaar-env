@@ -95,3 +95,22 @@ farm: once every rollout trades, GRPO's group baseline cancels it.
 - `src/bazaar_env/exploits.py` — deterministic exploit pass.
 - `DESIGN.md` — reward rationale, roadmap, and pre-registered farms.
 - `results/results.md` — commands and a place for first eval numbers.
+
+## V2: Maker + Adversary
+
+Status: **v1 trainer-verified; v2 engine-tested**. v1 has one hosted GRPO run. v2 adds maker quoting and scripted adversary flow, with model preflights still pending.
+
+On maker tiers (`maker_micro`, `maker_easy`) the agent can post a two-sided quote:
+
+```text
+quote BP BQ AP AQ
+```
+
+That means bid price/size and ask price/size. `pass` leaves the standing quote in place. After the quote is posted, the index steps forward and scripted flow trades against the standing quote:
+
+- **Noise flow** fills attractive quotes.
+- **Pickoff flow** sees the stepped index and takes stale quotes.
+- **Bait depth** can make displayed size larger than executable size on juicy taker quotes.
+- **Trigger hunting** can move displayed taker quotes just inside a threshold the agent has revealed in prior trades.
+
+Scripted anchors confirm the mechanic: a tight quoter gets many fills and loses to pickoff; a wide quoter does nothing; a vol-aware quoter earns spread with near-zero pickoff on `maker_micro`.
