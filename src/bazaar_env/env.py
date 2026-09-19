@@ -29,8 +29,20 @@ RULES = (
     "`sell Q`, `pass`, or (on maker tiers) `quote BP BQ AP AQ`, where "
     "BP/BQ are your bid price/size and AP/AQ are your ask price/size. "
     "A quote replaces your standing market; `pass` leaves it unchanged. "
-    "You cannot short in v1/v2: sell quantity is capped by inventory, and "
+    "You cannot short: sell quantity is capped by inventory, and "
     "buy quantity is capped by cash. There are {horizon} turns."
+)
+
+CREDIT_RULES = (
+    " This tier has an automatic margin loan: buying beyond your cash draws "
+    "the loan for you, and surplus cash repays it at the end of each turn. "
+    "Interest accrues on outstanding debt at {rate_pct}% per turn. Total "
+    "debt may not exceed {max_leverage}x your equity (equity = cash + "
+    "inventory marked at the index - debt), which caps your buying power. "
+    "COVENANT: if equity falls below {maintenance_pct}% of debt you get a "
+    "MARGIN CALL and must cure it (sell down) by the end of the next turn, "
+    "or you DEFAULT: the episode ends and your terminal score is 0. Your "
+    "terminal score is final equity divided by starting net worth."
 )
 
 # Optional rules addendum: states the trading atom explicitly. Instruction
@@ -196,6 +208,18 @@ def pickoff_losses(completion, info, **kwargs) -> float:
     return float(replay(info, completion).final_state.pickoff_losses)
 
 
+def max_debt_metric(completion, info, **kwargs) -> float:
+    return float(replay(info, completion).final_state.max_debt)
+
+
+def interest_paid_metric(completion, info, **kwargs) -> float:
+    return float(replay(info, completion).final_state.interest_paid)
+
+
+def defaulted_metric(completion, info, **kwargs) -> float:
+    return 1.0 if replay(info, completion).final_state.defaulted else 0.0
+
+
 def avg_quote_width(completion, info, **kwargs) -> float:
     """Average posted quote width (ask - bid) across the transcript's quote
     commands. 0.0 if the model never posted a quote."""
@@ -291,6 +315,12 @@ class BazaarEnv(vf.MultiTurnEnv):
 def task_row(task: core.MarketTask, strategy_hint: bool = False) -> dict[str, Any]:
     first_state = core.initial_state(task)
     rules = RULES.format(horizon=task.horizon)
+    if task.config.credit:
+        rules += CREDIT_RULES.format(
+            rate_pct=round(task.config.interest_rate * 100, 2),
+            max_leverage=task.config.max_leverage,
+            maintenance_pct=round(task.config.maintenance_ratio * 100, 1),
+        )
     if strategy_hint:
         rules += STRATEGY_HINT
     return {
@@ -362,6 +392,10 @@ def load_environment(
     edge_width: float | None = None,
     edge_probability: float | None = None,
     max_quote_qty: int | None = None,
+    credit: bool | None = None,
+    interest_rate: float | None = None,
+    max_leverage: float | None = None,
+    maintenance_ratio: float | None = None,
     **kwargs,
 ) -> vf.Environment:
     overrides = {
@@ -376,6 +410,10 @@ def load_environment(
             ("edge_width", edge_width),
             ("edge_probability", edge_probability),
             ("max_quote_qty", max_quote_qty),
+            ("credit", credit),
+            ("interest_rate", interest_rate),
+            ("max_leverage", max_leverage),
+            ("maintenance_ratio", maintenance_ratio),
         )
         if value is not None
     }
@@ -395,6 +433,9 @@ def load_environment(
     rubric.add_metric(realized_spread)
     rubric.add_metric(pickoff_losses)
     rubric.add_metric(avg_quote_width)
+    rubric.add_metric(max_debt_metric)
+    rubric.add_metric(interest_paid_metric)
+    rubric.add_metric(defaulted_metric)
 
     return BazaarEnv(
         dataset=train,

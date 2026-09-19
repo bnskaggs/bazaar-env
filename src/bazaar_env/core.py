@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass, replace
 from typing import Callable, Iterable, Literal
 
-ActionKind = Literal["buy", "sell", "pass", "quote"]
+ActionKind = Literal["buy", "sell", "pass", "quote", "borrow", "repay"]
 
 FORMAT_BONUS = 0.2
 FIRST_TRADE_BONUS = 0.05
@@ -37,6 +37,13 @@ class Tier:
     bait_probability: float = 0.0
     bait_depth_fraction: float = 0.25
     trigger_hunt_probability: float = 0.0
+    # v3 credit: a cash margin loan. The rate is the hurdle (borrow only when
+    # your edge beats it); max_leverage bounds the blast radius; the covenant
+    # plus a one-turn cure window is what closes the limited-liability lottery.
+    credit: bool = False
+    interest_rate: float = 0.005
+    max_leverage: float = 1.0
+    maintenance_ratio: float = 0.30
 
 
 TIERS: dict[str, Tier] = {
@@ -51,6 +58,18 @@ TIERS: dict[str, Tier] = {
     "hard": Tier(vol=3.0, spread=4.0, edge_width=1.0, edge_probability=0.2),
     "maker_micro": Tier(starting_inventory=5, vol=0.6, spread=2.0, edge_width=5.0, edge_probability=0.7, maker=True, flow_intensity=4, pickoff_intensity=2, bait_probability=0.15, trigger_hunt_probability=0.15),
     "maker_easy": Tier(starting_inventory=5, vol=1.2, spread=2.5, edge_width=3.0, edge_probability=0.45, maker=True, flow_intensity=5, pickoff_intensity=3, bait_probability=0.25, trigger_hunt_probability=0.25),
+    # credit_micro is deliberately capital-poor (cash 300 vs micro's 1000):
+    # measured 09-19, with ample cash the loan never binds and credit is pure
+    # interest drag - the correct policy would be "never borrow", which
+    # teaches nothing. Scarce capital makes "borrow when the edge beats the
+    # rate" a real decision.
+    # credit_micro's shape is lumpy on purpose (measured 09-19, three tunings):
+    # (1) scarce cash (300) or the loan never binds; (2) big displayed sizes
+    # (8) or the loan has no marginal value; (3) RARE, FAT edges (p=0.35,
+    # width 8) or the opportunity cost of a bank-visit turn dominates and the
+    # correct policy is "never borrow". Credit pays when opportunity is lumpy:
+    # finance on quiet turns, strike the windfall, repay after.
+    "credit_micro": Tier(starting_cash=300.0, starting_inventory=5, vol=0.6, spread=2.0, edge_width=8.0, edge_probability=0.35, max_quote_qty=8, maker=True, flow_intensity=4, pickoff_intensity=2, bait_probability=0.15, trigger_hunt_probability=0.15, credit=True),
 }
 
 
@@ -97,6 +116,11 @@ class MarketState:
     fills: int = 0
     realized_spread: float = 0.0
     pickoff_losses: float = 0.0
+    debt: float = 0.0
+    interest_paid: float = 0.0
+    max_debt: float = 0.0
+    margin_call: bool = False
+    defaulted: bool = False
     illegal_free_used: bool = False
     stopped: bool = False
     stop_reason: str | None = None
@@ -287,8 +311,26 @@ def marked_net_worth(state: MarketState) -> float:
     return round_money(state.cash + state.inventory * current_index(state))
 
 
+def equity(state: MarketState) -> float:
+    """Net worth after debt — the number the terminal score is built on."""
+    return round_money(marked_net_worth(state) - state.debt)
+
+
+def max_borrowable(state: MarketState) -> float:
+    """Remaining borrow capacity: total debt may not exceed max_leverage x
+    current equity (borrowing itself is equity-neutral: +cash, +debt)."""
+    cap = state.task.config.max_leverage * equity(state)
+    return round_money(max(0.0, cap - state.debt))
+
+
+def in_covenant_breach(state: MarketState) -> bool:
+    if state.debt <= 0:
+        return False
+    return equity(state) < state.task.config.maintenance_ratio * state.debt
+
+
 def mark_to_index_pnl(state: MarketState) -> float:
-    return round_money(marked_net_worth(state) - starting_net_worth(state.task))
+    return round_money(equity(state) - starting_net_worth(state.task))
 
 
 def is_done(state: MarketState) -> bool:
@@ -337,6 +379,12 @@ def public_state(state: MarketState, recent: int = 3) -> dict:
         result["fills"] = state.fills
         result["realized_spread"] = round_money(state.realized_spread)
         result["pickoff_losses"] = round_money(state.pickoff_losses)
+    if state.task.config.credit:
+        # Credit-only keys, same prompt-format discipline as the maker keys.
+        result["debt"] = round_money(state.debt)
+        result["equity"] = equity(state)
+        result["borrowable"] = max_borrowable(state)
+        result["margin_call"] = state.margin_call
     return result
 
 
@@ -374,7 +422,13 @@ def illegal_reason(state: MarketState, action: Action) -> str | None:
                 return f"displayed ask size {quote.ask_size} but executable size is {ask_size}"
             return f"quantity {action.quantity} exceeds ask size {quote.ask_size}"
         cost = quote.ask * action.quantity
-        if cost > state.cash + 1e-9:
+        buying_power = state.cash + (max_borrowable(state) if state.task.config.credit else 0.0)
+        if cost > buying_power + 1e-9:
+            if state.task.config.credit:
+                return (
+                    f"cost {round_money(cost)} exceeds buying power "
+                    f"{round_money(buying_power)} (cash + margin capacity)"
+                )
             return f"not enough cash to buy {action.quantity} at ask {quote.ask}"
         return None
     if action.kind == "sell":
@@ -386,15 +440,86 @@ def illegal_reason(state: MarketState, action: Action) -> str | None:
         if action.quantity > state.inventory:
             return f"not enough inventory to sell {action.quantity}"
         return None
+    if action.kind in {"borrow", "repay"}:
+        # Margin is automatic (measured 09-19: explicit bank-visit turns can
+        # never pay for themselves at a 10-turn horizon). The verbs stay
+        # parseable so models get an instructive correction.
+        if state.task.config.credit:
+            return (
+                "margin is automatic on this tier: buying beyond your cash "
+                "draws the loan (within leverage), and surplus cash repays it "
+                "at the end of each turn"
+            )
+        return "there is no credit on this tier"
     return "unknown action"
+
+
+def settle_turn(state: MarketState) -> tuple[MarketState, list[str]]:
+    """Advance the world by one turn: index steps, flow resolves against any
+    standing quote, interest accrues, and the covenant is enforced. Every
+    consumed turn — trade, quote, pass, bank visit, or wasted illegal — goes
+    through here: the market never stops.
+    """
+    notes: list[str] = []
+    state = replace(state, turn=min(state.turn + 1, state.task.horizon))
+    state, flow_notes = flow_against_quote(state)
+    notes.extend(flow_notes)
+
+    if state.task.config.credit and state.debt > 0 and state.cash > 0:
+        # Surplus cash repays the loan automatically: idle debt cannot exist,
+        # which structurally deletes the idle-borrower farm.
+        repay = round_money(min(state.cash, state.debt))
+        state = replace(
+            state,
+            cash=round_money(state.cash - repay),
+            debt=round_money(state.debt - repay),
+        )
+        notes.append(f"auto-repaid {repay} (debt {round_money(state.debt)})")
+
+    if state.task.config.credit and state.debt > 0:
+        interest = round_money(state.debt * state.task.config.interest_rate)
+        if interest > 0:
+            state = replace(
+                state,
+                debt=round_money(state.debt + interest),
+                interest_paid=round_money(state.interest_paid + interest),
+            )
+            notes.append(f"interest {interest} accrued (debt {round_money(state.debt)})")
+        state = replace(state, max_debt=max(state.max_debt, state.debt))
+
+        if in_covenant_breach(state):
+            if state.margin_call:
+                state = replace(
+                    state,
+                    defaulted=True,
+                    stopped=True,
+                    stop_reason="margin call not cured: default",
+                )
+                notes.append("DEFAULT: margin call not cured; episode over")
+            else:
+                state = replace(state, margin_call=True)
+                notes.append(
+                    "MARGIN CALL: equity below maintenance; cure by end of next "
+                    "turn (repay or sell down) or default"
+                )
+        elif state.margin_call:
+            state = replace(state, margin_call=False)
+            notes.append("margin call cured")
+    elif state.margin_call:
+        # Debt fully repaid (or zero): breach is impossible, clear the flag.
+        state = replace(state, margin_call=False)
+        notes.append("margin call cured")
+    return state, notes
 
 
 def apply_action(state: MarketState, action: Action) -> StepResult:
     reason = illegal_reason(state, action)
     if reason is not None:
         if state.illegal_free_used:
-            nxt = replace(state, turn=min(state.turn + 1, state.task.horizon))
+            nxt, notes = settle_turn(state)
             turn_note = "Wasted a turn."
+            if notes:
+                turn_note += " " + "; ".join(notes)
         else:
             nxt = replace(state, illegal_free_used=True)
             turn_note = "No turn consumed; further illegal actions waste a turn."
@@ -408,11 +533,11 @@ def apply_action(state: MarketState, action: Action) -> StepResult:
         return apply_maker_action(state, action)
 
     if action.kind == "pass":
-        return StepResult(
-            state=replace(state, turn=min(state.turn + 1, state.task.horizon)),
-            reply="ok: passed",
-            legal=True,
-        )
+        nxt, notes = settle_turn(state)
+        reply = "ok: passed"
+        if notes:
+            reply += "; " + "; ".join(notes)
+        return StepResult(state=nxt, reply=reply, legal=True)
 
     quote = current_quote(state)
     index_value = current_index(state)
@@ -432,27 +557,39 @@ def apply_action(state: MarketState, action: Action) -> StepResult:
         source="take",
         edge_vs_index=take_edge,
     )
+    new_cash = round_money(state.cash + cash_delta)
+    new_debt = state.debt
+    margin_note = ""
+    if new_cash < 0:
+        # Auto-margin: the broker fronts the shortfall (legality already
+        # checked cost against cash + capacity).
+        draw = round_money(-new_cash)
+        new_debt = round_money(state.debt + draw)
+        new_cash = 0.0
+        margin_note = f" (margin draw {draw}, debt {new_debt})"
     nxt = replace(
         state,
-        turn=min(state.turn + 1, state.task.horizon),
-        cash=round_money(state.cash + cash_delta),
+        cash=new_cash,
+        debt=new_debt,
         inventory=state.inventory + inventory_delta,
         trades=state.trades + (trade,),
         first_trade_done=True,
     )
-    return StepResult(
-        state=nxt,
-        reply=f"ok: {action.kind} {quantity} @ {price} (edge_vs_index={take_edge})",
-        legal=True,
-        trade=trade,
-    )
+    nxt, notes = settle_turn(nxt)
+    reply = f"ok: {action.kind} {quantity} @ {price} (edge_vs_index={take_edge}){margin_note}"
+    if notes:
+        reply += "; " + "; ".join(notes)
+    return StepResult(state=nxt, reply=reply, legal=True, trade=trade)
 
 
 def _fill(state: MarketState, side: Literal["buy", "sell"], quantity: int, price: float, source: str, index_value: float) -> tuple[MarketState, Trade | None]:
     if quantity <= 0:
         return state, None
     if side == "buy":
-        quantity = min(quantity, int(state.cash // price)) if price > 0 else 0
+        buying_power = state.cash + (
+            max_borrowable(state) if state.task.config.credit else 0.0
+        )
+        quantity = min(quantity, int(buying_power // price)) if price > 0 else 0
         if quantity <= 0:
             return state, None
         cash_delta = -price * quantity
@@ -478,9 +615,17 @@ def _fill(state: MarketState, side: Literal["buy", "sell"], quantity: int, price
     )
     realized = max(0.0, edge * quantity)
     pickoff = max(0.0, -edge * quantity) if source == "pickoff" else 0.0
+    new_cash = round_money(state.cash + cash_delta)
+    new_debt = state.debt
+    if new_cash < 0:
+        # Auto-margin covers fills on the agent's own bid, within the leverage
+        # cap already enforced by the buying-power clamp above.
+        new_debt = round_money(state.debt - new_cash)
+        new_cash = 0.0
     return replace(
         state,
-        cash=round_money(state.cash + cash_delta),
+        cash=new_cash,
+        debt=new_debt,
         inventory=state.inventory + inventory_delta,
         trades=state.trades + (trade,),
         first_trade_done=True,
@@ -560,16 +705,21 @@ def apply_maker_action(state: MarketState, action: Action) -> StepResult:
         reply = f"ok: quote bid {standing.bid} x {standing.bid_size} / ask {standing.ask} x {standing.ask_size}"
     else:
         reply = "ok: standing quote left unchanged"
-    # Quote at index_t, then the world moves to index_t+1 before fills.
-    state = replace(state, turn=min(state.turn + 1, state.task.horizon))
-    state, notes = flow_against_quote(state)
+    # Quote at index_t, then the world moves to index_t+1 before fills;
+    # settle_turn also accrues interest and enforces the covenant.
+    state, notes = settle_turn(state)
     if notes:
-        reply += "; fills: " + "; ".join(notes)
+        reply += "; " + "; ".join(notes)
     return StepResult(state=state, reply=reply, legal=True)
 
 
 def reward_components(state: MarketState, format_ok: bool) -> RewardComponents:
-    terminal_return = marked_net_worth(state) / starting_net_worth(state.task)
+    if state.defaulted:
+        # Default wipes the terminal component. Strictly dominated by passive
+        # play (~1.0), which is what keeps borrow-and-pray a losing strategy.
+        terminal_return = 0.0
+    else:
+        terminal_return = equity(state) / starting_net_worth(state.task)
     return RewardComponents(
         terminal_return=terminal_return,
         first_trade_bonus=FIRST_TRADE_BONUS if state.first_trade_done else 0.0,
@@ -590,7 +740,7 @@ def summarize_reward(state: MarketState, format_ok: bool) -> dict[str, float]:
 # Requiring the whole message to be a bare command punishes chatty models for
 # protocol, not planning (the seg-4 confound).
 ACTION_RE = re.compile(
-    r"\b(?:(quote)\s+([0-9]+(?:\.[0-9]+)?)\s+(\d+)\s+([0-9]+(?:\.[0-9]+)?)\s+(\d+)|(buy|sell)\s+(\d+)|(pass))\b",
+    r"\b(?:(quote)\s+([0-9]+(?:\.[0-9]+)?)\s+(\d+)\s+([0-9]+(?:\.[0-9]+)?)\s+(\d+)|(buy|sell|borrow|repay)\s+(\d+)|(pass))\b",
     re.IGNORECASE,
 )
 
@@ -616,7 +766,7 @@ def parse_action(text: str) -> Action | None:
             ask_size=ask_size,
             raw=f"quote {bid:g} {bid_size} {ask:g} {ask_size}",
         )
-    kind: ActionKind = "buy" if match.group(6).lower() == "buy" else "sell"
+    kind: ActionKind = match.group(6).lower()  # buy | sell | borrow | repay
     quantity = int(match.group(7))
     return Action(kind=kind, quantity=quantity, raw=f"{kind} {quantity}")
 
@@ -683,6 +833,51 @@ def vol_aware_quoter_policy(state: MarketState) -> Action:
     # enough to earn flow while avoiding most pickoffs.
     width = max(1.5, 3.0 * state.task.config.vol + state.task.config.spread)
     return quote_action(current_index(state), width=width, size=3)
+
+
+def buying_power(state: MarketState) -> float:
+    return round_money(
+        state.cash + (max_borrowable(state) if state.task.config.credit else 0.0)
+    )
+
+
+def margin_taker_policy(threshold: float = 1.0) -> Policy:
+    """The credit anchor: size takes to full buying power (cash + margin) when
+    the edge clears the threshold, and let auto-repay handle the loan. The
+    skill the tier teaches: leverage into edges, not into hope."""
+
+    def policy(state: MarketState) -> Action:
+        quote = current_quote(state)
+        idx = current_index(state)
+        if idx - quote.ask >= threshold:
+            qty = min(quote.ask_size, int(buying_power(state) // quote.ask))
+            if qty > 0:
+                return Action(kind="buy", quantity=qty, raw=f"buy {qty}")
+        if quote.bid - idx >= threshold and state.inventory > 0:
+            qty = min(quote.bid_size, state.inventory)
+            return Action(kind="sell", quantity=qty, raw=f"sell {qty}")
+        return passive_policy(state)
+
+    return policy
+
+
+def margin_gambler_policy(seed: int = 0) -> Policy:
+    # The limited-liability lottery, auto-margin edition: max-size coin-flip
+    # trades regardless of edge. Covenant + interest must make this lose.
+    rng = random.Random(seed)
+
+    def policy(state: MarketState) -> Action:
+        quote = current_quote(state)
+        if rng.random() < 0.5:
+            qty = min(quote.ask_size, max(1, int(buying_power(state) // quote.ask)))
+            if qty > 0 and buying_power(state) >= quote.ask:
+                return Action(kind="buy", quantity=qty, raw=f"buy {qty}")
+        if state.inventory > 0:
+            qty = min(quote.bid_size, state.inventory)
+            return Action(kind="sell", quantity=qty, raw=f"sell {qty}")
+        return passive_policy(state)
+
+    return policy
 
 
 def threshold_taker_policy(threshold: float = 1.5) -> Policy:
@@ -764,6 +959,10 @@ def result_to_dict(result: ReplayResult) -> dict:
         "fills": result.final_state.fills,
         "realized_spread": result.final_state.realized_spread,
         "pickoff_losses": result.final_state.pickoff_losses,
+        "final_equity": equity(result.final_state),
+        "max_debt": result.final_state.max_debt,
+        "interest_paid": result.final_state.interest_paid,
+        "defaulted": result.final_state.defaulted,
         "components": result.components,
     }
 

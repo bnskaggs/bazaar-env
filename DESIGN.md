@@ -164,3 +164,65 @@ once, instead of looping at full size.
 
 These anchors are the v2 exploit catalogue baseline. Model preflights come next;
 training is a separate go/no-go.
+
+## V3 Credit (implemented 0.3.0)
+
+Credit is an **automatic margin loan**: buying beyond your cash draws the loan
+(within leverage), and surplus cash repays it at the end of every turn.
+Interest (0.5%/turn default) accrues on outstanding debt. Equity = cash +
+inventory marked at the index - debt; the terminal score is equity over
+starting net worth. COVENANT: equity below 30% of debt triggers a margin call
+with a one-turn cure window; failure to cure defaults the episode at terminal
+score 0.
+
+### Why automatic margin (a measured design decision)
+
+The first design used explicit `borrow X` / `repay X` actions. Four
+measurements killed it:
+
+1. With ample starting cash, the loan never binds: credit is pure interest
+   drag and the correct policy is "never borrow" (levered taker 0.975 vs
+   unlevered 1.027).
+2. Scarce cash (300) without big sizes: the loan still has no marginal value
+   because displayed sizes cap any trade below cash anyway.
+3. Big sizes with dense edges: a bank-visit turn forgoes an edge ~70% of the
+   time - the opportunity cost of the borrowing ACTION dominates all interest
+   math at a 10-turn horizon (tactical borrower 1.041 vs no-credit 1.045).
+4. Lumpy edges (rare, fat): reactive borrowing wastes the windfall turn it is
+   reacting to; proactive borrow-and-hold pays interest all game for ~1.75
+   windfalls (0.981 vs 1.031).
+
+Conclusion: at short horizons, explicit bank-visit turns can never pay for
+themselves. Real margin accounts solve this the same way: the broker fronts
+cash at the moment of the trade. Auto-margin removes the turn-cost
+distortion, shrinks the grammar, and structurally deletes the idle-borrower
+farm (idle debt cannot exist). The `borrow`/`repay` verbs remain parseable
+and return an instructive illegal message.
+
+### Shipped anchors (credit_micro, 20 seeds)
+
+- `margin_taker` (size to buying power on real edges): **1.0371**, interest
+  6.24 -- beats the unlevered taker (1.0292). Leverage amplifies skill.
+- `margin_gambler` (max-size coin flips): **0.9734** -- loses to passive
+  (0.9977). The lottery is closed at shipped settings.
+- High-vol lottery check (vol 3.0): gambler 0.984 < passive 0.988.
+
+### The leverage sweep (vol 3.0, 30 seeds) -- why max_leverage ships at 1.0
+
+| max_leverage | gambler | gambler defaults | taker | passive |
+|---:|---:|---:|---:|---:|
+| 1.0 | 0.9993 | 0 | 1.0441 | 1.0040 |
+| 2.0 | 1.0074 | 0 | 1.0467 | 1.0040 |
+| 3.0 | 1.0051 | 0 | 1.0458 | 1.0040 |
+| 4.0 | 0.9790 | 1 | 1.0458 | 1.0040 |
+
+The limited-liability lottery starts leaking at 2-3x leverage (gambler edges
+above passive) before the default cliff claws it back at 4x, while the
+skilled taker gains almost nothing beyond 1x. So 1.0 ships: full skill
+benefit, clean lottery loss.
+
+**Stated honestly:** at 1x leverage the covenant/default machinery almost
+never fires in play (zero defaults across all shipped-anchor runs; first
+observed default at 4x leverage in the sweep). It is unit-tested and
+sweep-exercised, and exists as tail risk plus the boundary that makes the
+leverage dial safe to raise later. Shorting remains deferred (v3.1).

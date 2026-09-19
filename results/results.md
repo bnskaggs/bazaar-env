@@ -362,3 +362,55 @@ Reference points (reward scale = terminal + 0.25): vol-aware scripted anchor
 the train split, maker rewards, and group variance have executed and produced
 an above-anchor policy with no catastrophic forgetting. Scope: one run, one
 model, one tier, warm-started.
+
+## V3 Credit Anchors (0.3.0, credit_micro)
+
+Status: **engine-tested; preflights below.**
+
+Run:
+
+```powershell
+uv run --extra dev python -m bazaar_env.exploits --tier credit_micro --seeds 20
+uv run --extra dev python -m bazaar_env.exploits --lottery --seeds 20
+uv run --extra dev python scripts/leverage_sweep.py
+```
+
+### 2026-09-19 anchors (20 seeds)
+
+```json
+{
+  "margin_taker": {"terminal_return": 1.0371, "interest": 6.24, "defaults": 0},
+  "unlevered_taker": {"terminal_return": 1.0292, "interest": 0.0},
+  "honest_taker": {"terminal_return": 1.0315, "interest": 0.0},
+  "vol_aware_quoter": {"terminal_return": 1.047, "interest": 3.35},
+  "wide_quoter": {"terminal_return": 1.0538, "interest": 0.35},
+  "margin_gambler": {"terminal_return": 0.9734, "interest": 8.49, "defaults": 0},
+  "passive": {"terminal_return": 0.9977}
+}
+```
+
+Reads: leverage amplifies skill (margin taker +0.8pp over unlevered); the
+limited-liability lottery loses at shipped settings and at high vol (0.984 vs
+0.988 passive); the leverage sweep in DESIGN.md shows the lottery leaking at
+2-3x before defaults claw it back at 4x, which is why max_leverage ships at
+1.0. Note the maker anchors on this tier: rare fat edges make wide quoting
+strong (1.0538) - the tier's best play mixes making and levered taking.
+
+Honesty note: zero defaults occur in anchor play at 1x leverage; the
+covenant/default machinery is unit-tested and sweep-exercised (first default
+observed at 4x), and exists as the boundary that makes the leverage dial safe
+to raise.
+
+### 2026-09-19 9B preflight on credit_micro (zero-shot)
+
+```text
+terminal_return: avg 1.009, std 0.041 (richest spread of any tier; v1 micro was 0.014)
+best rollout: 1.044 (above the margin-taker anchor)
+margin use: real and unprompted - max_debt up to 670, interest paid, zero defaults
+anchors: passive 0.998 / margin_taker 1.037 / wide_quoter 1.054
+```
+
+Read: above passive, well below the anchors, with high within-task variance and
+behaviors partially present. This is the most trainable-shaped band read Bazaar
+has produced. Recommended training shape if funded: warm-start from the v2
+curriculum checkpoint (three-stage curriculum: taker -> maker -> credit).

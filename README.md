@@ -117,3 +117,18 @@ That means bid price/size and ask price/size. `pass` leaves the standing quote i
 - **Trigger hunting** can move displayed taker quotes just inside a threshold the agent has revealed in prior trades.
 
 Scripted anchors confirm the mechanic: a tight quoter gets many fills and loses to pickoff; a wide quoter does nothing; a vol-aware quoter earns spread with near-zero pickoff on `maker_micro`.
+
+## V3: Credit (automatic margin)
+
+Status: **engine-tested; model preflight below.** On credit tiers
+(`credit_micro`) the agent has an automatic margin loan: buy beyond your cash
+and the loan is drawn for you (up to 1x equity); surplus cash repays it each
+turn; interest accrues at 0.5%/turn on outstanding debt. If equity falls below
+30% of debt: margin call, one turn to cure, then default (episode over,
+terminal score 0). The terminal score is final equity over starting net worth.
+
+`credit_micro` is deliberately capital-poor with rare, fat edges: the loan
+exists because opportunity is lumpy. Measured anchors: sizing real edges to
+full buying power beats staying unlevered (1.037 vs 1.029); max-size gambling
+loses to doing nothing (0.973 vs 0.998). `DESIGN.md` carries the leverage
+sweep and the four measured design dead-ends that led to automatic margin.
