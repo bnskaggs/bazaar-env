@@ -1,0 +1,59 @@
+# Bazaar curriculum run: warm-start from the v1 (taker/micro) trained
+# checkpoint and train on maker_micro (v2: quoting + adversary flow).
+#
+# Why curriculum: base 9B preflight on the FIXED 0.2.1 engine scored 1.008
+# vs the vol-aware anchor 1.020 - it makes markets but quotes ~1.0 wide vs
+# the anchor's ~3.8 and gives flow back to pickoff. The v1 run taught this
+# exact model index-vs-price reasoning (eval 1.2506 -> 1.2861 = honest
+# anchor); hypothesis: that prior arms the quote-width skill to bootstrap.
+# Pre-registered risk: width discipline may not emerge; a flat curve is a
+# finding for DESIGN.md either way.
+#
+# Checkpoint: step-55 of run boq0dlqme647ww0ryu7coud1 (READY; step-60 stuck
+# UPLOADING at launch time). Train reward plateau ~1.29 from step ~52, so
+# 55 vs 60 is marginal.
+#
+# GOTCHA (magic-sort lesson, cost $3.87): max_steps is ABSOLUTE, not
+# incremental - warm-start resumes the counter at 56, so max_steps = 95
+# means 40 new steps.
+#
+# Cost sketch: v1 bazaar ran ~$0.18/step; maker rollouts are similar sized
+# -> ~$8-13 for 40 steps. Dual-tier eval: maker_micro tracks learning,
+# micro tracks forgetting of the v1 skill.
+
+model = "Qwen/Qwen3.5-9B"
+checkpoint_id = "azyx9zxrpoko8al7if9cdeiu"
+max_steps = 95
+batch_size = 64
+rollouts_per_example = 8
+
+[sampling]
+max_tokens = 400
+enable_thinking = false
+
+[[env]]
+id = "bnskaggs/bazaar-env"
+args = { tier = "maker_micro" }
+
+[checkpoints]
+interval = 10
+
+[eval]
+interval = 10
+num_examples = 20
+rollouts_per_example = 2
+
+[eval.sampling]
+max_tokens = 400
+temperature = 0.0
+enable_thinking = false
+
+[[eval.env]]
+name = "maker_micro"
+id = "bnskaggs/bazaar-env"
+args = { tier = "maker_micro" }
+
+[[eval.env]]
+name = "micro"
+id = "bnskaggs/bazaar-env"
+args = { tier = "micro" }
