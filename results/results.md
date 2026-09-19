@@ -111,7 +111,10 @@ Windows note: do not use `--save-results` with colon-containing model names.
 Band hypothesis:
 
 - `micro` should produce enough trades and return variance for training.
-- Provisional success threshold: terminal return >= 1.05x passive.
+- Success threshold: terminal return >= 1.02 (half the honest-anchor
+  margin over passive; re-based 2026-09-18 after the original 1.05x was
+  found to sit above the honest anchor itself — see the preflight
+  ladder below).
 - Edge-width is the first dial to tune if the band misses.
 
 ### 2026-09-18 first band probe — qwen2.5:7b-instruct, micro, 5x2
@@ -139,11 +142,11 @@ Read:
   gradient is thin rather than dead — unlike a sparse-solve env at 0%.
 - **Structural finding for calibration:** sell edges (bid > index) are
   unusable while inventory is zero, so the effective edge frequency in the
-  early episode is roughly half the nominal `edge_probability`. Options,
-  operator's dial: (a) start the agent with inventory so both edge
+  early episode is roughly half the nominal `edge_probability`. Options
+  considered: (a) start the agent with inventory so both edge
   directions are live from turn 1, (b) bias early edges toward the buy
   side, (c) raise `edge_width`/`edge_probability`, (d) lower the
-  threshold. Calibration is an operator call per the design ruling.
+  threshold. (a) was adopted as the structurally correct dealer setup.
 
 ### 2026-09-18 calibration sweep — three dials, one conclusion
 
