@@ -414,3 +414,20 @@ Read: above passive, well below the anchors, with high within-task variance and
 behaviors partially present. This is the most trainable-shaped band read Bazaar
 has produced. Recommended training shape if funded: warm-start from the v2
 curriculum checkpoint (three-stage curriculum: taker -> maker -> credit).
+
+### 2026-09-19 outside review (0.3.1) -- supersedes the 0.3.0 credit numbers
+
+Two review findings fixed: credit_micro is now TAKER-ONLY (a static wide quote
+earned 1.054 risk-free and ignored credit entirely -- the noise-reservation /
+edge-width coupling; documented in DESIGN.md) and the terminal score is floored
+at 0 with or without default (surviving negative equity no longer scores below
+defaulting). 55 tests.
+
+Post-fix anchors (20 seeds): margin_taker 1.0495 / unlevered_taker 1.0428 /
+honest_taker 1.0446 / margin_gambler 0.9811 / passive 0.9977.
+
+9B re-preflight (taker-only tier): terminal 1.003 +/- 0.017, margin used
+unprompted in some rollouts, zero defaults, zero illegal loops. The prior
+1.009 read was inflated by maker fills on the degenerate tier. Anchor gap to
+margin_taker (~4.6pp) is the largest of any Bazaar tier -- trainable-shaped;
+recommended run remains the three-stage curriculum warm-start.

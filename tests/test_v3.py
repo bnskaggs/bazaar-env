@@ -172,6 +172,38 @@ def test_replay_handles_borrow_attempt_and_continues():
     assert not result.no_progress_stopped
 
 
+# --- Regressions from the 09-19 outside review ---
+
+
+def test_credit_micro_is_taker_only():
+    # With maker on, noise reservations scaled with edge_width and a static
+    # 12-wide quote earned 1.054 risk-free - the tier's optimal policy ignored
+    # credit entirely. The credit tier is taker-only until the noise model is
+    # retuned for an integrated tier.
+    state = core.initial_state(_credit_task(0))
+
+    result = core.apply_action(
+        state,
+        core.Action(kind="quote", bid=95, bid_size=3, ask=105, ask_size=3, raw="quote 95 3 105 3"),
+    )
+
+    assert not result.legal
+    assert "maker tiers" in result.reply
+    assert "standing_quote" not in core.public_state(state)
+    assert "debt" in core.public_state(state)
+
+
+def test_terminal_return_floored_at_zero_without_default():
+    # Surviving with negative equity must never score worse than defaulting.
+    state = core.initial_state(_credit_task(0))
+    state = replace(state, debt=2_000.0, cash=0.0, inventory=1)
+
+    components = core.summarize_reward(state, format_ok=True)
+
+    assert core.equity(state) < 0
+    assert components["terminal_return"] == 0.0
+
+
 def test_credit_rules_text_present_on_credit_tier():
     row = task_row(_credit_task(0))
     system_text = row["prompt"][0]["content"]

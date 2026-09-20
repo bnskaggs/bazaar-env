@@ -226,3 +226,27 @@ never fires in play (zero defaults across all shipped-anchor runs; first
 observed default at 4x leverage in the sweep). It is unit-tested and
 sweep-exercised, and exists as tail risk plus the boundary that makes the
 leverage dial safe to raise later. Shorting remains deferred (v3.1).
+
+### Outside review (0.3.1) -- two findings, both fixed and kept in the catalogue
+
+1. **The credit tier's optimal policy ignored credit.** With maker mechanics
+   on, noise reservations scale with `edge_width`; on a fat-edge tier a static
+   12-wide quote earned 1.054 essentially risk-free -- better than the margin
+   taker -- without ever touching the loan. Fix: `credit_micro` is taker-only.
+   An integrated maker+credit tier waits for a noise model whose reservation
+   dispersion is decoupled from edge width.
+2. **Defaulting could beat surviving.** Default floors the score at 0, but a
+   non-defaulted episode could end with negative equity and score below zero.
+   Fix: the terminal component is floored at 0 with or without default
+   (consistent limited liability); the covenant keeps the region above the
+   floor honest.
+
+Post-fix anchors (taker-only credit_micro, 20 seeds): margin_taker **1.0495**
+vs unlevered 1.0428 (leverage still amplifies skill); margin_gambler 0.9811 <
+passive 0.9977. High-vol nuance, stated plainly: at vol 3.0 the coin-flip
+gambler edges past passive (+0.3pp, zero defaults, floor untouched) because
+random takes accidentally harvest the tier's fat edges -- world generosity,
+not limited-liability leakage; the skilled taker beats it by ~5pp. Leverage
+sweep post-fix: gambler ~1.007-1.010 at 1-3x, 0.981 with defaults at 4x;
+taker flat ~1.052 across -- the 1x cap keeps the full skill benefit and the
+smallest skill-free leak.

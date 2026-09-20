@@ -127,8 +127,9 @@ turn; interest accrues at 0.5%/turn on outstanding debt. If equity falls below
 30% of debt: margin call, one turn to cure, then default (episode over,
 terminal score 0). The terminal score is final equity over starting net worth.
 
-`credit_micro` is deliberately capital-poor with rare, fat edges: the loan
-exists because opportunity is lumpy. Measured anchors: sizing real edges to
-full buying power beats staying unlevered (1.037 vs 1.029); max-size gambling
-loses to doing nothing (0.973 vs 0.998). `DESIGN.md` carries the leverage
-sweep and the four measured design dead-ends that led to automatic margin.
+`credit_micro` is deliberately capital-poor with rare, fat edges, and
+taker-only (an outside review found a maker degeneracy; see DESIGN.md).
+Measured anchors: sizing real edges to full buying power beats staying
+unlevered (1.050 vs 1.043); max-size gambling loses to doing nothing (0.981
+vs 0.998). `DESIGN.md` carries the leverage sweep, the four measured design
+dead-ends that led to automatic margin, and the two outside-review findings.

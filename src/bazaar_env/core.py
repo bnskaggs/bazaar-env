@@ -67,9 +67,12 @@ TIERS: dict[str, Tier] = {
     # (1) scarce cash (300) or the loan never binds; (2) big displayed sizes
     # (8) or the loan has no marginal value; (3) RARE, FAT edges (p=0.35,
     # width 8) or the opportunity cost of a bank-visit turn dominates and the
-    # correct policy is "never borrow". Credit pays when opportunity is lumpy:
-    # finance on quiet turns, strike the windfall, repay after.
-    "credit_micro": Tier(starting_cash=300.0, starting_inventory=5, vol=0.6, spread=2.0, edge_width=8.0, edge_probability=0.35, max_quote_qty=8, maker=True, flow_intensity=4, pickoff_intensity=2, bait_probability=0.15, trigger_hunt_probability=0.15, credit=True),
+    # correct policy is "never borrow". Credit pays when opportunity is lumpy.
+    # TAKER-ONLY (outside review 09-19): with maker on, noise reservations
+    # scale with edge_width and a braindead 12-wide static quote earned 1.054
+    # risk-free - the tier's optimal policy ignored credit entirely. The
+    # integrated maker+credit tier waits for a retuned noise model.
+    "credit_micro": Tier(starting_cash=300.0, starting_inventory=5, vol=0.6, spread=2.0, edge_width=8.0, edge_probability=0.35, max_quote_qty=8, credit=True),
 }
 
 
@@ -719,7 +722,10 @@ def reward_components(state: MarketState, format_ok: bool) -> RewardComponents:
         # play (~1.0), which is what keeps borrow-and-pray a losing strategy.
         terminal_return = 0.0
     else:
-        terminal_return = equity(state) / starting_net_worth(state.task)
+        # Floored at 0 (limited liability), consistent with the default floor:
+        # surviving with negative equity must never score worse than
+        # defaulting (outside review 09-19).
+        terminal_return = max(0.0, equity(state) / starting_net_worth(state.task))
     return RewardComponents(
         terminal_return=terminal_return,
         first_trade_bonus=FIRST_TRADE_BONUS if state.first_trade_done else 0.0,
