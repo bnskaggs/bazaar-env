@@ -1,0 +1,64 @@
+# Bazaar curriculum run 3: warm-start from the v2 maker checkpoint and train
+# on credit_micro (automatic margin + covenant/default).
+#
+# Preflight (2026-09-19, fixed 0.3.1 engine): base 9B on credit_micro scored
+# 1.003 +/- 0.017 vs the margin_taker anchor 1.0495. This is the largest
+# anchor gap of any Bazaar tier. Best rollout already uses margin and scores
+# 1.044, so behavior exists but is inconsistent.
+#
+# Hypothesis: the v2 checkpoint already knows index-vs-price and quote-width
+# discipline; credit_micro should teach when to size edge-taking with margin
+# without forgetting v1/v2 skills.
+# Pre-registered risk: margin-use discipline may not bootstrap; a flat curve
+# is a documented dense-reward/curriculum finding.
+#
+# Warm start: step-90 checkpoint from run e7naqkjeix1hmqf9eibh264t. No step-95
+# checkpoint exists (checkpoint interval 10). At step 90, maker_micro eval was
+# 1.2792 and micro eval 1.2877.
+#
+# GOTCHA (magic-sort lesson): max_steps is ABSOLUTE, not incremental.
+# 90 -> 130 means 40 new steps.
+# Cost sketch: v2 maker run was $8.12 for 40 steps; credit tier similar ->
+# ~$8-15. Wallet checked 2026-09-19: $41.86.
+
+model = "Qwen/Qwen3.5-9B"
+checkpoint_id = "ix2fgbi0csvgvkazkedvmkva"
+max_steps = 130
+batch_size = 64
+rollouts_per_example = 8
+
+[sampling]
+max_tokens = 400
+enable_thinking = false
+
+[[env]]
+id = "bnskaggs/bazaar-env"
+args = { tier = "credit_micro" }
+
+[checkpoints]
+interval = 10
+
+[eval]
+interval = 15
+num_examples = 20
+rollouts_per_example = 2
+
+[eval.sampling]
+max_tokens = 400
+temperature = 0.0
+enable_thinking = false
+
+[[eval.env]]
+name = "credit_micro"
+id = "bnskaggs/bazaar-env"
+args = { tier = "credit_micro" }
+
+[[eval.env]]
+name = "maker_micro"
+id = "bnskaggs/bazaar-env"
+args = { tier = "maker_micro" }
+
+[[eval.env]]
+name = "micro"
+id = "bnskaggs/bazaar-env"
+args = { tier = "micro" }
