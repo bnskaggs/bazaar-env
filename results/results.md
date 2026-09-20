@@ -431,3 +431,39 @@ unprompted in some rollouts, zero defaults, zero illegal loops. The prior
 1.009 read was inflated by maker fills on the degenerate tier. Anchor gap to
 margin_taker (~4.6pp) is the largest of any Bazaar tier -- trainable-shaped;
 recommended run remains the three-stage curriculum warm-start.
+
+## V3 Curriculum Run -- credit_micro from the v2 maker checkpoint
+
+Run `bazaar-env--qwen3.5-9b--dqp67h` (`dqp67hcmadgq8t2mhov0247t`), warm-started
+from the v2 step-90 checkpoint (`ix2fgbi0csvgvkazkedvmkva`), trained on
+`credit_micro` for 40 new steps (90 -> 130), triple eval. Total cost **$9.83**.
+
+| Step | credit_micro eval | maker_micro eval | micro eval |
+|---|---:|---:|---:|
+| 105 | 1.2655 | 1.2629 | 1.2660 |
+| 120 | **1.2758** | 1.2633 | 1.2717 |
+
+Reference points (reward scale):
+
+- Base 9B zero-shot on credit_micro: ~1.253 (terminal 1.003).
+- margin_taker anchor: ~1.2995 reward (terminal 1.0495 + 0.25 bonuses).
+- v2 maker run final: maker_micro 1.2792, micro 1.2877.
+
+**Findings:**
+
+1. **Credit learning exists but is incomplete.** credit_micro eval improves by
+   +0.0103 reward (~+1pp terminal return) over 15 steps and clears the zero-shot
+   baseline, but remains below the margin_taker anchor.
+2. **Forgetting is real.** maker_micro collapses from 1.2792 to ~1.263 and micro
+   from 1.2877 to 1.272. The three-stage curriculum did not preserve prior
+   skills under single-tier credit training.
+3. **Train reward degrades after the early steps.** Batch means open high
+   (1.33 at step 91, 1.34 at step 98) but slide toward ~1.24-1.26 by the end.
+   The late checkpoint is not an obvious keeper; step 120 has the only credit
+   eval improvement but still forgets.
+
+**Verdict:** v3 is **trained, but not cleanly trainer-verified as a stable
+three-stage curriculum.** The credit tier is a live learning signal, but the
+single-tier run trades off prior skills. Next attempt should use a mixed
+curriculum (credit_micro + maker_micro + micro in the training batch, not only
+in eval) or shorter credit fine-tuning from the v2 checkpoint.
