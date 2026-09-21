@@ -7,6 +7,7 @@ scoring.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import replace
 from typing import Any
 
@@ -376,10 +377,63 @@ def build_dataset(
     return Dataset.from_list(rows)
 
 
+TIER_SEED_STRIDE = 100_000
+
+
+def parse_tier_mix(spec: str | Sequence[str]) -> list[str]:
+    """Accept ``"a,b,c"`` or ``["a", "b", "c"]``. Order and repeats matter:
+    repeating a tier weights it, e.g. ``"credit_micro,credit_micro,micro"``
+    is a two-thirds credit mix."""
+
+    tiers = (
+        [part.strip() for part in spec.split(",")]
+        if isinstance(spec, str)
+        else [str(part).strip() for part in spec]
+    )
+    tiers = [tier for tier in tiers if tier]
+    if not tiers:
+        raise ValueError("tier_mix is empty")
+    for tier in tiers:
+        core.tier_config(tier)
+    return tiers
+
+
+def build_mixed_dataset(
+    n: int,
+    seed0: int,
+    tiers: Sequence[str],
+    overrides: dict[str, Any] | None = None,
+    strategy_hint: bool = False,
+) -> Dataset:
+    """Round-robin tasks across tiers so every training batch spans all of them.
+
+    GRPO groups stay single-tier — a group is one task sampled many times — so
+    within-group variance is still pure policy signal. What changes is the
+    batch: each step sees credit, maker, and taker groups, which is the point.
+
+    Each slot draws from its own seed block because ``core.generate`` seeds one
+    RNG on the integer alone, so slot 0 seed 7 and slot 1 seed 7 would share a
+    draw stream. Blocks stay well below the frozen eval split at 1_000_000.
+    """
+
+    rows = []
+    for i in range(n):
+        slot = i % len(tiers)
+        seed = seed0 + slot * TIER_SEED_STRIDE + i // len(tiers)
+        rows.append(
+            task_row(
+                core.generate(tier=tiers[slot], seed=seed, **(overrides or {})),
+                strategy_hint=strategy_hint,
+            )
+        )
+    return Dataset.from_list(rows)
+
+
 def load_environment(
     num_train_examples: int = 200,
     num_eval_examples: int = 40,
     tier: str = "micro",
+    tier_mix: str | Sequence[str] | None = None,
     strict_format: bool = True,
     repeat_stop: int = 4,
     strategy_hint: bool = False,
@@ -417,8 +471,21 @@ def load_environment(
         )
         if value is not None
     }
-    train = build_dataset(num_train_examples, 0, tier, overrides, strategy_hint=strategy_hint)
-    evald = build_dataset(num_eval_examples, 1_000_000, tier, overrides, strategy_hint=strategy_hint)
+    # tier_mix trains on several tiers at once. Overrides, if any, apply to
+    # every tier in the mix.
+    if tier_mix is None:
+        train = build_dataset(num_train_examples, 0, tier, overrides, strategy_hint=strategy_hint)
+        evald = build_dataset(
+            num_eval_examples, 1_000_000, tier, overrides, strategy_hint=strategy_hint
+        )
+    else:
+        tiers = parse_tier_mix(tier_mix)
+        train = build_mixed_dataset(
+            num_train_examples, 0, tiers, overrides, strategy_hint=strategy_hint
+        )
+        evald = build_mixed_dataset(
+            num_eval_examples, 1_000_000, tiers, overrides, strategy_hint=strategy_hint
+        )
 
     rubric = vf.Rubric()
     rubric.add_reward_func(outcome_reward, weight=1.0)

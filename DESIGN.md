@@ -199,6 +199,16 @@ distortion, shrinks the grammar, and structurally deletes the idle-borrower
 farm (idle debt cannot exist). The `borrow`/`repay` verbs remain parseable
 and return an instructive illegal message.
 
+This deviates from the pre-registered ruling (explicit verbs) and was signed
+off on 2026-09-21. **What the deviation costs, stated plainly:** the borrow
+decision is no longer a legible action. A reader expecting to watch an agent
+*choose* to take on debt will instead watch it choose a trade size that
+requires debt, and credit usage shows up only in the `max_debt` and
+`interest_paid` metrics rather than in the action transcript. If a long-horizon
+tier (30+ turns) ever ships, the bank-turn opportunity cost that killed the
+explicit design shrinks by roughly 3x, so the ruling is worth re-measuring
+then rather than re-assuming.
+
 ### Shipped anchors (credit_micro, 20 seeds)
 
 - `margin_taker` (size to buying power on real edges): **1.0371**, interest

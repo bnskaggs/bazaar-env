@@ -1,0 +1,83 @@
+# Bazaar run 4b: MIXED curriculum from the v2 maker checkpoint.
+#
+# Why mixed. Run 3 (dqp67hcmadgq8t2mhov0247t) trained on credit_micro alone
+# and evaluated all three tiers. Credit improved (1.2655 -> 1.2758) and both
+# priors decayed (maker_micro 1.2792 -> ~1.263, micro 1.2877 -> 1.2717). The
+# tiers were in the eval but never in the training batch, so nothing was
+# rehearsing them. This run puts all three in the batch.
+#
+# Weighting: `tier_mix` round-robins, and a repeated tier is how the mix gets
+# weighted. credit_micro appears twice, so the mix is 50% credit / 25% maker /
+# 25% taker. An even 1/3 split was the obvious choice and is the wrong one:
+# credit only moved +0.0103 across 40 DEDICATED steps, so at a third of the
+# gradient density it plausibly does not move at all. 50% keeps most of the
+# credit signal while still rehearsing both priors every step.
+# At batch_size 64 / rollouts 8 = 8 groups per step, that is ~4 credit, 2
+# maker, 2 taker groups. Groups stay single-tier (a group is one task sampled
+# 8 times), so within-group variance is still pure policy signal; only the
+# batch is mixed.
+#
+# num_train_examples raised to 320 (default 200) so 40 steps x 8 groups draws
+# fresh tasks throughout — repeat exposure to the same handful of maker/taker
+# tasks would make "priors held" an overfitting artifact rather than retention.
+#
+# Requires bazaar-env >= 0.3.3 (the `tier_mix` arg).
+#
+# Warm start: SAME step-90 checkpoint as run 4a
+# (e7naqkjeix1hmqf9eibh264t), deliberately — 4a and 4b are independent
+# branches off one parent, so their curves are directly comparable.
+# At step 90: maker_micro 1.2792, micro 1.2877.
+# Baselines on credit_micro: base 9B ~1.253, run 3 best 1.2758,
+# margin_taker anchor ~1.2995.
+#
+# Pre-registered risk, stated before launch: the credit track may flatten
+# because of the dilution described above. A flat credit track with both
+# priors held is still a real finding — it would say the forgetting is a
+# capacity/interference limit rather than a schedule artifact — but it is NOT
+# the clean three-skill result and must not be written up as one.
+#
+# GOTCHA: max_steps is ABSOLUTE. 90 -> 130 means 40 new steps.
+# Cost sketch: run 3 was $9.83 for the same 40 steps + 2 triple evals; this
+# adds a third eval point -> ~$10-12.
+
+model = "Qwen/Qwen3.5-9B"
+checkpoint_id = "ix2fgbi0csvgvkazkedvmkva"
+max_steps = 130
+batch_size = 64
+rollouts_per_example = 8
+
+[sampling]
+max_tokens = 400
+enable_thinking = false
+
+[[env]]
+id = "bnskaggs/bazaar-env"
+args = { tier_mix = "credit_micro,credit_micro,maker_micro,micro", num_train_examples = 320 }
+
+[checkpoints]
+interval = 10
+
+[eval]
+interval = 13
+num_examples = 20
+rollouts_per_example = 2
+
+[eval.sampling]
+max_tokens = 400
+temperature = 0.0
+enable_thinking = false
+
+[[eval.env]]
+name = "credit_micro"
+id = "bnskaggs/bazaar-env"
+args = { tier = "credit_micro" }
+
+[[eval.env]]
+name = "maker_micro"
+id = "bnskaggs/bazaar-env"
+args = { tier = "maker_micro" }
+
+[[eval.env]]
+name = "micro"
+id = "bnskaggs/bazaar-env"
+args = { tier = "micro" }
