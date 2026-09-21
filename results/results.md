@@ -1,6 +1,10 @@
 # Bazaar Results
 
-Status: **trainer-verified (one LoRA run, one tier) as of 2026-09-18.**
+Status: **v1, v2, and v3 trainer-verified as of 2026-09-21** — three skills
+(taker, maker, credit) in one model, $39.66 of hosted training total. One run
+per shape, one model, warm-started after v1. Contains one corrected finding:
+the first credit run was published as a partial success and was not one
+(see the correction under "V3 Curriculum Run").
 
 ## Training Run 1 — Qwen3.5-9B on micro (hosted LoRA GRPO)
 
@@ -508,24 +512,91 @@ sign of the result can flip — as it did here, in a write-up that was published
 to GitHub and the Hub before the error was caught. Every warm-started config in
 this repo now sets `eval_base_model` and puts its first eval early.
 
-## V3 Follow-Up Runs 4a / 4b (0.3.3) -- in flight
+## V3 Follow-Up Runs 4a / 4b (0.3.3) -- both worked; mixed won
 
-Two runs launched 2026-09-21 off the **same** v2 step-90 checkpoint, so their
-curves are directly comparable to each other and to run 3.
+Two runs launched 2026-09-21 off the **same** v2 step-90 checkpoint
+(`ix2fgbi0csvgvkazkedvmkva`), so their curves are directly comparable to each
+other and to run 3. Pre-registered success criterion, set before launch:
+**beat 1.2899 on credit_micro while holding maker_micro at 1.2792 and micro at
+1.2889.** Both runs cleared it.
 
-- **4a `xrxif3tzpzb2f1e93o6ph7sl`** — short credit fine-tune, 90 -> 102 (12
-  steps), `credit_micro` only. Eval *and* checkpoint both on interval 4, so
-  every eval point (94, 98, 102) has a keepable checkpoint behind it. Tests the
-  **schedule** hypothesis: does a short fine-tune capture credit gain before
-  degradation sets in? ~$3-4.
-- **4b `nfa92qg1mguwnv5i0e7w2fah`** — mixed curriculum, 90 -> 130 (40 steps),
-  `tier_mix = credit_micro,credit_micro,maker_micro,micro` (50/25/25),
-  `num_train_examples = 320`. Tests the **training-shape** hypothesis: run 3
-  had the priors in the eval but never in the training batch, so nothing
-  rehearsed them. ~$10-12.
+### 4a -- short credit fine-tune (schedule hypothesis)
 
-Success for either run means **beating 1.2899 on credit_micro while holding
-maker_micro at 1.2792 and micro at 1.2889.** Pre-registered risk for 4b: the
-credit track may flatten from dilution. A flat credit track with priors held
-would still be a real finding — interference rather than schedule — but it is
-not a three-skill win and will not be written up as one.
+`bazaar-env--qwen3.5-9b--xrxif3` (`xrxif3tzpzb2f1e93o6ph7sl`), `credit_micro`
+only, 90 -> 102 (12 new steps), eval and checkpoint both on interval 4. Total
+cost **$3.03**.
+
+| Step | credit_micro | maker_micro | micro |
+|---|---:|---:|---:|
+| 92 (baseline) | 1.2899 | 1.2792 | 1.2889 |
+| 96 | 1.2941 | 1.2798 | 1.2891 |
+| **100 (keeper)** | **1.2978** | 1.2797 | 1.2894 |
+
+Credit rose monotonically **+0.0079 above its own starting checkpoint** while
+both priors held. Keeper checkpoint `h8bvcjwu7zyq09j0ft1egnwu` at step 100.
+
+### 4b -- mixed curriculum (training-shape hypothesis)
+
+`bazaar-env--qwen3.5-9b--nfa92q` (`nfa92qg1mguwnv5i0e7w2fah`), 90 -> 130 (40
+new steps), `tier_mix = credit_micro,credit_micro,maker_micro,micro`
+(50/25/25), `num_train_examples = 320`. Total cost **$7.80**.
+
+| Step | credit_micro | maker_micro | micro |
+|---|---:|---:|---:|
+| 91 (baseline) | 1.2899 | 1.2793 | 1.2881 |
+| 104 | 1.2977 | 1.2799 | 1.2890 |
+| 117 | **1.3008** | 1.2791 | 1.2907 |
+| 130 | 1.3001 | 1.2801 | **1.2913** |
+
+Credit rose **+0.0102 and finished above the `margin_taker` scripted anchor**
+(~1.2995 reward, terminal 1.0495): 1.3001 is terminal ~1.050. Both priors
+ended **up**, not merely intact — maker 1.2793 -> 1.2801 and micro 1.2881 ->
+1.2913, the latter the best micro eval any Bazaar run has produced.
+
+**Findings:**
+
+1. **The diagnosis was right and the fix is the training batch.** Run 3 put
+   the priors in the eval and never in the batch, so nothing rehearsed them and
+   all three tracks decayed. Putting them in the batch does not merely prevent
+   the decay — over 40 steps, the same step count that degraded everything in
+   run 3, every track improved.
+2. **Mixed beat short on every axis.** 4b gained more credit (+0.0102 vs
+   +0.0079), cleared the scripted anchor where 4a approached it, and improved
+   the priors where 4a held them. Dilution was the pre-registered risk and it
+   did not materialise at a 50% credit weight.
+3. **Rehearsal appears to be worth more than gradient density.** 4b spent half
+   its batch on non-credit tiers and still out-learned the credit-only run on
+   credit. The obvious reading is that mixed batches regularise; a single run
+   per shape cannot separate that from noise, and it is not claimed as settled.
+4. **The absolute gains are small because transfer already did the work.** The
+   whole contested range from the warm-start checkpoint to the anchor was ~1pp
+   of terminal return. That is the honest frame: the headline v3 result is the
+   zero-shot transfer (1.003 base -> 1.040 checkpoint), and these runs closed
+   the last tenth of the gap and crossed the anchor.
+
+**Status upgrade: v3 is trainer-verified as a three-skill curriculum** --
+credit learned, maker and taker retained, above the scripted credit anchor, for
+$10.83 across both runs. Scope stated plainly, as always: one run per training
+shape, one model, warm-started, one tier per skill.
+
+### What 4b got wrong, for the next run
+
+4b's eval interval (13) and checkpoint interval (10) do not align, so its best
+eval -- step 117 at 1.3008 -- **has no checkpoint behind it**; the nearest are
+110 and 120. Step 130 (1.3001) is inside eval noise of 117 and does have one,
+so nothing was actually lost, but the rule 4a followed and 4b did not is worth
+stating: **match the eval and checkpoint intervals.** A good step you cannot
+keep is not a result you can ship.
+
+### Cumulative cost
+
+| Run | Shape | Cost |
+|---|---|---:|
+| v1 `boq0dl` | taker, cold start | $10.88 |
+| v2 `e7naqk` | maker, curriculum from v1 | $8.12 |
+| v3 run 3 `dqp67h` | credit-only (failed; see correction) | $9.83 |
+| v3 run 4a `xrxif3` | credit short fine-tune | $3.03 |
+| v3 run 4b `nfa92q` | credit mixed curriculum | $7.80 |
+| **Total** | | **$39.66** |
+
+Plus under $2 of model probes across the whole project.

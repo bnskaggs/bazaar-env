@@ -1,24 +1,36 @@
 # Bazaar Env
 
-Status: **v1 and v2 trainer-verified. v3 mechanics shipped; v3 training has
-produced no keeper yet.** v1: a hosted GRPO run (Qwen3.5-9B on `micro`,
+Status: **v1, v2, and v3 all trainer-verified** — three skills in one model
+for $39.66 of hosted training. v1: a hosted GRPO run (Qwen3.5-9B on `micro`,
 $10.88) raised the frozen-split eval from the passive baseline to the
 honest-dealer anchor. v2: a curriculum run warm-started from the v1
 checkpoint ($8.12) evals **above the vol-aware maker anchor** on
 `maker_micro` with zero forgetting of the v1 skill — and plateaus fast,
-which is stated plainly in `results/results.md`. Scope: one run per tier,
-one model, warm-started v2.
+which is stated plainly in `results/results.md`. v3: a mixed-batch curriculum
+run ($7.80) clears the margin-taker anchor on `credit_micro` while improving
+both prior skills. Scope: one run per training shape, one model, warm-started
+after v1.
 
-**v3 (credit), stated plainly.** The mechanics, anchors, and leverage sweep
-are shipped and audited. The first credit training run (09-19, $9.83) was
-written up as a partial success and **was not one** — a baseline eval added
-two days later showed it finished below the checkpoint it started from on all
-three tiers. See the correction in `results/results.md`. What survives is a
-better finding: the v1→v2 curriculum checkpoint scores **1.2899 on
-`credit_micro` with zero credit training**, roughly 80% of the way from the
-base model to the margin-taker anchor on a tier it has never seen. Two
-follow-up runs (4a short fine-tune, 4b mixed curriculum) are testing whether
-any credit training beats that.
+**v3 (credit).** Trainer-verified as a **three-skill curriculum** as of
+09-21: one model that takes edges, makes markets, and sizes against a margin
+loan. A mixed-batch curriculum run ($7.80) took `credit_micro` from 1.2899 to
+1.3001 — **above the scripted margin-taker anchor** — while *improving* the
+maker and taker evals rather than trading them away. A short credit-only
+fine-tune ($3.03) also cleared the baseline, by less.
+
+Two things about v3 are stated plainly rather than buried, because both are
+more interesting than the headline:
+
+- **The first credit run (09-19, $9.83) was published as a partial success and
+  was not one.** A baseline eval added two days later showed it had finished
+  *below* the checkpoint it warm-started from on all three tiers; the write-up
+  had benchmarked the base model instead of the parent checkpoint. Full
+  correction in `results/results.md`, and the rule it cost us is in
+  `DESIGN.md`.
+- **Most of v3's credit skill came from transfer, not credit training.** The
+  v1→v2 curriculum checkpoint scores 1.2899 on `credit_micro` — a tier it has
+  never seen — which is ~80% of the way from the base model to the anchor.
+  The training runs closed the last tenth and crossed the anchor.
 
 Bazaar is a short-horizon dealer-market environment for LLM agents. A model
 trades one commodity against scripted quotes while the commodity's fair value

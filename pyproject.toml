@@ -1,6 +1,6 @@
 [project]
 name = "bazaar-env"
-version = "0.3.3"
+version = "0.3.4"
 description = "A short-horizon dealer-market RL environment with deterministic marking, scripted quotes, and exploit-aware rewards."
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
