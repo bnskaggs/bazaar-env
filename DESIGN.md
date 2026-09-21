@@ -112,6 +112,29 @@ the v3 build.
 
 Per-turn call auction with uniform crossing price and published tie-break rules.
 
+## Warm-Start Evaluation Rule
+
+**Any warm-started run must evaluate its starting checkpoint on the new tier
+before training on it.** Set `eval_base_model` and put the first eval early.
+
+This is not hygiene, it is the difference between a result and its opposite.
+The 09-19 credit run skipped it, compared its curve against the *base model*,
+and shipped a "credit learning exists" finding to GitHub and the Hub. A
+baseline eval two days later showed the warm-start checkpoint already scored
+higher than anything the run achieved: the run had degraded the checkpoint on
+all three tiers and the apparent gain was recovery from its own damage. Full
+correction in `results/results.md`.
+
+Two corollaries worth stating:
+
+- **Anchor gaps quoted against the base model do not apply to warm-started
+  runs.** The credit tier's headroom is ~4.6pp from the base model and ~1pp
+  from the v2 checkpoint. Quoting the first while training the second
+  overstates what is available to learn by roughly 4x.
+- **Every eval point should have a checkpoint behind it.** Matching the eval
+  and checkpoint intervals costs nothing and means a good step is a keepable
+  step.
+
 ## Contamination Note
 
 The frozen eval split is generated from disjoint seeds. The tasks are executable,

@@ -1,12 +1,24 @@
 # Bazaar Env
 
-Status: **v1 and v2 trainer-verified.** v1: a hosted GRPO run (Qwen3.5-9B
-on `micro`, $10.88) raised the frozen-split eval from the passive baseline
-to the honest-dealer anchor. v2: a curriculum run warm-started from the v1
+Status: **v1 and v2 trainer-verified. v3 mechanics shipped; v3 training has
+produced no keeper yet.** v1: a hosted GRPO run (Qwen3.5-9B on `micro`,
+$10.88) raised the frozen-split eval from the passive baseline to the
+honest-dealer anchor. v2: a curriculum run warm-started from the v1
 checkpoint ($8.12) evals **above the vol-aware maker anchor** on
 `maker_micro` with zero forgetting of the v1 skill — and plateaus fast,
 which is stated plainly in `results/results.md`. Scope: one run per tier,
 one model, warm-started v2.
+
+**v3 (credit), stated plainly.** The mechanics, anchors, and leverage sweep
+are shipped and audited. The first credit training run (09-19, $9.83) was
+written up as a partial success and **was not one** — a baseline eval added
+two days later showed it finished below the checkpoint it started from on all
+three tiers. See the correction in `results/results.md`. What survives is a
+better finding: the v1→v2 curriculum checkpoint scores **1.2899 on
+`credit_micro` with zero credit training**, roughly 80% of the way from the
+base model to the margin-taker anchor on a tier it has never seen. Two
+follow-up runs (4a short fine-tune, 4b mixed curriculum) are testing whether
+any credit training beats that.
 
 Bazaar is a short-horizon dealer-market environment for LLM agents. A model
 trades one commodity against scripted quotes while the commodity's fair value
@@ -14,9 +26,9 @@ follows a seeded exogenous index. The terminal score marks inventory at that
 index, so the agent cannot move the reward by trading against itself or pumping
 its own book.
 
-This repository currently implements **v1** only: solo taker, one commodity, no
-credit, no adversary, 10 turns. The v2/v3 mechanics are pre-registered in
-`DESIGN.md`, not implemented yet.
+v1 (solo taker), v2 (maker + scripted adversary), and v3 (automatic margin
+credit) are all implemented. Shorting and the multi-agent call auction remain
+pre-registered in `DESIGN.md`.
 
 ## Why This Exists
 

@@ -440,30 +440,92 @@ from the v2 step-90 checkpoint (`ix2fgbi0csvgvkazkedvmkva`), trained on
 
 | Step | credit_micro eval | maker_micro eval | micro eval |
 |---|---:|---:|---:|
+| 90 (warm start, measured 09-21) | *1.2899* | *1.2792* | *1.2889* |
 | 105 | 1.2655 | 1.2629 | 1.2660 |
 | 120 | **1.2758** | 1.2633 | 1.2717 |
 
+The step-90 row was **not** measured when this run was written up; it comes
+from the 4a/4b baseline evals two days later. Every number below it is worse
+than it.
+
 Reference points (reward scale):
 
-- Base 9B zero-shot on credit_micro: ~1.253 (terminal 1.003).
+- **v2 step-90 checkpoint, the correct baseline for this run: credit_micro
+  1.2899.**
+- Base 9B zero-shot on credit_micro: ~1.253 (terminal 1.003) — the reference
+  the original write-up wrongly used.
 - margin_taker anchor: ~1.2995 reward (terminal 1.0495 + 0.25 bonuses).
 - v2 maker run final: maker_micro 1.2792, micro 1.2877.
 
-**Findings:**
+> [!correction] **2026-09-21 — this run's original finding was wrong, and the
+> error was ours.** The follow-up runs (4a/4b below) evaluate the warm-start
+> checkpoint *before* training, which this run's config never did. The v2
+> step-90 checkpoint scores **credit_micro 1.2899 / maker_micro 1.2792 / micro
+> 1.2889 with zero credit training.** Run 3 therefore finished **below its own
+> starting point on all three tiers** — it did not teach credit, it degraded
+> the checkpoint, and the "+0.0103 improvement" below is partial recovery from
+> its own damage. The original write-up compared the credit curve against the
+> **base model** (~1.253) instead of against the **parent checkpoint**
+> (1.2899). Both are real numbers; only the second one answers "did training
+> help." Corrected findings follow.
 
-1. **Credit learning exists but is incomplete.** credit_micro eval improves by
-   +0.0103 reward (~+1pp terminal return) over 15 steps and clears the zero-shot
-   baseline, but remains below the margin_taker anchor.
-2. **Forgetting is real.** maker_micro collapses from 1.2792 to ~1.263 and micro
-   from 1.2877 to 1.272. The three-stage curriculum did not preserve prior
-   skills under single-tier credit training.
-3. **Train reward degrades after the early steps.** Batch means open high
-   (1.33 at step 91, 1.34 at step 98) but slide toward ~1.24-1.26 by the end.
-   The late checkpoint is not an obvious keeper; step 120 has the only credit
-   eval improvement but still forgets.
+Checkpoint identity is not in doubt: the baseline maker_micro read (1.2792)
+matches the v2 run's own step-90 eval to four decimal places, and the base
+model scores ~1.253 on credit_micro, so 1.2899 is the checkpoint.
 
-**Verdict:** v3 is **trained, but not cleanly trainer-verified as a stable
-three-stage curriculum.** The credit tier is a live learning signal, but the
-single-tier run trades off prior skills. Next attempt should use a mixed
-curriculum (credit_micro + maker_micro + micro in the training batch, not only
-in eval) or shorter credit fine-tuning from the v2 checkpoint.
+**Corrected findings:**
+
+1. **The run was net-negative on every tier.** Against the true baseline:
+   credit_micro 1.2899 -> 1.2758 (-0.0141), maker_micro 1.2792 -> 1.2633
+   (-0.0159), micro 1.2889 -> 1.2717 (-0.0172). Forty steps, $9.83, nothing
+   gained. There is no keeper checkpoint in this run.
+2. **What replaces it is a stronger result: credit skill transferred with no
+   credit training.** The v1->v2 curriculum checkpoint lands at 1.2899 on a
+   tier it has never seen — about 1.040 terminal against a base model at 1.003
+   and the margin_taker anchor at 1.0495. That is roughly **80% of the
+   base-to-anchor gap closed by transfer alone.** Taker edge-recognition plus
+   quote-width discipline evidently generalize to sizing against buying power.
+3. **The trainable headroom on credit_micro is ~1pp, not ~4.6pp.** The 4.6pp
+   anchor gap quoted in the preflight section above is measured from the *base
+   model*, which is the wrong reference for a warm-started run. From the
+   checkpoint the gap to the anchor is ~0.01 reward. This is the most likely
+   reason single-tier credit training found nothing to climb.
+4. **Train reward degrades after the early steps.** Batch means open high
+   (1.33 at step 91, 1.34 at step 98) then slide to ~1.24-1.26. Read against
+   the corrected baseline this is the whole story rather than a caveat on it.
+
+**Corrected verdict:** run 3 is a **failed run**, not a partial success. v3's
+mechanics are sound and its preflight band read was honest, but this training
+attempt produced nothing worth keeping. The live v3 claim is the transfer
+result in finding 2. Runs 4a and 4b test whether any credit training can beat
+1.2899 without damaging the priors.
+
+### Standing rule this cost us
+
+**Always evaluate the warm-start checkpoint on the new tier before training on
+it.** Without that point you cannot distinguish learning from recovery, and the
+sign of the result can flip — as it did here, in a write-up that was published
+to GitHub and the Hub before the error was caught. Every warm-started config in
+this repo now sets `eval_base_model` and puts its first eval early.
+
+## V3 Follow-Up Runs 4a / 4b (0.3.3) -- in flight
+
+Two runs launched 2026-09-21 off the **same** v2 step-90 checkpoint, so their
+curves are directly comparable to each other and to run 3.
+
+- **4a `xrxif3tzpzb2f1e93o6ph7sl`** — short credit fine-tune, 90 -> 102 (12
+  steps), `credit_micro` only. Eval *and* checkpoint both on interval 4, so
+  every eval point (94, 98, 102) has a keepable checkpoint behind it. Tests the
+  **schedule** hypothesis: does a short fine-tune capture credit gain before
+  degradation sets in? ~$3-4.
+- **4b `nfa92qg1mguwnv5i0e7w2fah`** — mixed curriculum, 90 -> 130 (40 steps),
+  `tier_mix = credit_micro,credit_micro,maker_micro,micro` (50/25/25),
+  `num_train_examples = 320`. Tests the **training-shape** hypothesis: run 3
+  had the priors in the eval but never in the training batch, so nothing
+  rehearsed them. ~$10-12.
+
+Success for either run means **beating 1.2899 on credit_micro while holding
+maker_micro at 1.2792 and micro at 1.2889.** Pre-registered risk for 4b: the
+credit track may flatten from dilution. A flat credit track with priors held
+would still be a real finding — interference rather than schedule — but it is
+not a three-skill win and will not be written up as one.
